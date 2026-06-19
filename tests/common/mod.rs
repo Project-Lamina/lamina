@@ -1,5 +1,6 @@
 #![allow(clippy::expect_used)]
 
+use std::env::consts::EXE_SUFFIX;
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -16,7 +17,7 @@ pub fn run_lamina_benchmark(
             repo_root
                 .join("target")
                 .join("debug")
-                .join(format!("lamina{}", std::env::consts::EXE_SUFFIX))
+                .join(format!("lamina{}", EXE_SUFFIX))
         });
     let source = repo_root
         .join("benchmarks")
@@ -34,7 +35,7 @@ pub fn run_lamina_benchmark(
         .expect("failed to run lamina");
     assert!(status.success(), "lamina failed at -O{opt}");
 
-    let output_exe = repo_root.join(format!("{output_stem}{}", std::env::consts::EXE_SUFFIX));
+    let output_exe = repo_root.join(format!("{output_stem}{}", EXE_SUFFIX));
     let output = Command::new(&output_exe)
         .current_dir(&repo_root)
         .output()
