@@ -964,4 +964,476 @@ mod runtime_symbol_tests {
         assert!(asm.contains("call _k_malloc\n"), "{asm}");
         assert!(asm.contains("call _k_memset\n"), "{asm}");
     }
+
+    /// Cross-toolchain calls: a C file built by gcc calls a Lamina function and is called
+    /// back by one. A suite that compiles Lamina and checks Lamina's answer cannot see an
+    /// ABI disagreement, because both sides of it are ours.
+    mod abi_crosscall {
+        use crate::test_support::TempDir;
+        use crate::test_support::lamina_binary;
+        use std::{
+            env, fs,
+            path::Path,
+            process::{Command, Stdio},
+        };
+
+        const LAMINA: &str = r#"
+        type !P5 = packed struct { a: i8, b: i32 }
+        type !P10 = packed struct { x: i32, s: i16, y: i32 }
+        type !P9 = packed struct { a: i64, b: i8 }
+        type !Plain = struct { a: i32, b: i32 }
+
+        @extern
+        fn @c_p5(!P5 %p) -> i64
+
+        @extern
+        fn @c_p10(!P10 %p) -> i64
+
+        @export
+        fn @take_p5(!P5 %p) -> i64 {
+          entry:
+            %ap = getfieldptr.!P5 %p, 0
+            %bp = getfieldptr.!P5 %p, 1
+            %a = load.i8 %ap
+            %b = load.i32 %bp
+            %aw = extend.i8.i64 %a
+            %bw = extend.i32.i64 %b
+            %s = add.i64 %aw, %bw
+            ret.i64 %s
+        }
+
+        @export
+        fn @take_p10(!P10 %p) -> i64 {
+          entry:
+            %xp = getfieldptr.!P10 %p, 0
+            %yp = getfieldptr.!P10 %p, 2
+            %x = load.i32 %xp
+            %y = load.i32 %yp
+            %xw = extend.i32.i64 %x
+            %yw = extend.i32.i64 %y
+            %s = add.i64 %xw, %yw
+            ret.i64 %s
+        }
+
+        @export
+        fn @take_p9(!P9 %p) -> i64 {
+          entry:
+            %ap = getfieldptr.!P9 %p, 0
+            %bp = getfieldptr.!P9 %p, 1
+            %a = load.i64 %ap
+            %b = load.i8 %bp
+            %bw = extend.i8.i64 %b
+            %s = add.i64 %a, %bw
+            ret.i64 %s
+        }
+
+        @export
+        fn @take_plain(!Plain %p) -> i64 {
+          entry:
+            %ap = getfieldptr.!Plain %p, 0
+            %bp = getfieldptr.!Plain %p, 1
+            %a = load.i32 %ap
+            %b = load.i32 %bp
+            %aw = extend.i32.i64 %a
+            %bw = extend.i32.i64 %b
+            %s = add.i64 %aw, %bw
+            ret.i64 %s
+        }
+
+        @export
+        fn @spilled(i64 %a, i64 %b, i64 %c, i64 %d, i64 %e, i64 %f, !P5 %p, i64 %g) -> i64 {
+          entry:
+            %bp = getfieldptr.!P5 %p, 1
+            %bv = load.i32 %bp
+            %bw = extend.i32.i64 %bv
+            %t = add.i64 %a, %bw
+            %u = add.i64 %t, %g
+            ret.i64 %u
+        }
+
+        @export
+        fn @make_p5(i32 %v) -> !P5 {
+          entry:
+            %s = stackalloc.!P5
+            %ap = getfieldptr.!P5 %s, 0
+            %bp = getfieldptr.!P5 %s, 1
+            store.i8 %ap, 3
+            store.i32 %bp, %v
+            ret.!P5 %s
+        }
+
+        @export
+        fn @calls_back() -> i64 {
+          entry:
+            %p = stackalloc.!P5
+            %pa = getfieldptr.!P5 %p, 0
+            %pb = getfieldptr.!P5 %p, 1
+            store.i8 %pa, 7
+            store.i32 %pb, 305419896
+            %r1 = call @c_p5(!P5 %p)
+            %q = stackalloc.!P10
+            %qx = getfieldptr.!P10 %q, 0
+            %qs = getfieldptr.!P10 %q, 1
+            %qy = getfieldptr.!P10 %q, 2
+            store.i32 %qx, 1000
+            store.i16 %qs, 200
+            store.i32 %qy, 30000
+            %r2 = call @c_p10(!P10 %q)
+            %s = add.i64 %r1, %r2
+            ret.i64 %s
+        }
+        "#;
+
+        const DRIVER: &str = r#"
+        #include <stdio.h>
+        #include <stdint.h>
+        struct __attribute__((packed)) P5 { int8_t a; int32_t b; };
+        struct __attribute__((packed)) P10 { int32_t x; int16_t s; int32_t y; };
+        struct __attribute__((packed)) P9 { int64_t a; int8_t b; };
+        struct Plain { int32_t a, b; };
+
+        long take_p5(struct P5 p);
+        long take_p10(struct P10 p);
+        long take_p9(struct P9 p);
+        long take_plain(struct Plain p);
+        long spilled(long a, long b, long c, long d, long e, long f, struct P5 p, long g);
+        struct P5 make_p5(int32_t v);
+        long calls_back(void);
+
+        long c_p5(struct P5 p) { return (long)p.a + p.b; }
+        long c_p10(struct P10 p) { return (long)p.x + p.s + p.y; }
+
+        static int fails = 0;
+        static void eq(const char *n, long got, long want) {
+            if (got != want) { printf("FAIL %s: got %ld want %ld\n", n, got, want); fails++; }
+        }
+        int main(void) {
+            struct P5 p5 = {7, 305419896};
+            struct P10 p10 = {1000, 200, 30000};
+            struct P9 p9 = {123456789, 9};
+            struct Plain pl = {5, 6};
+            eq("take_p5", take_p5(p5), 7L + 305419896L);
+            eq("take_p10", take_p10(p10), 1000L + 30000);
+            eq("take_p9", take_p9(p9), 123456789L + 9);
+            eq("take_plain", take_plain(pl), 11L);
+            eq("spilled", spilled(5, 0, 0, 0, 0, 0, p5, 7), 5L + 305419896L + 7);
+            struct P5 made = make_p5(4242);
+            eq("make_p5.a", made.a, 3);
+            eq("make_p5.b", made.b, 4242);
+            eq("calls_back", calls_back(), (7L + 305419896L) + (1000L + 200 + 30000));
+            return fails != 0;
+        }
+        "#;
+
+        fn have(tool: &str) -> bool {
+            Command::new(tool)
+                .arg("--version")
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .is_ok_and(|status| status.success())
+        }
+
+        /// Skip, unless this run is the one that promises the cross toolchain.
+        ///
+        /// `gcc-15-aarch64-linux-gnu` conflicts with `gcc-multilib` on Ubuntu 26, so the
+        /// job that tests i686 cannot also host the aarch64 cross compiler. The cross
+        /// half runs in a job of its own, which sets `LAMINA_REQUIRE_CROSS_TOOLS`.
+        /// The emulator to run a cross binary with. Debian shipped `qemu-<arch>-static`
+        /// for years; on Ubuntu 26 `qemu-user-static` is virtual and the dynamic
+        /// `qemu-<arch>` is what installs. Either runs a statically linked binary.
+        fn emulator(name: &'static str) -> Option<&'static str> {
+            if have(name) {
+                return Some(name);
+            }
+            let plain = name.strip_suffix("-static")?;
+            have(plain).then_some(plain)
+        }
+
+        fn skip(reason: &str) -> bool {
+            let required =
+                env::var_os("LAMINA_REQUIRE_CROSS_TOOLS").is_some_and(|value| value == "1");
+            assert!(!required, "{reason} (LAMINA_REQUIRE_CROSS_TOOLS=1)");
+            eprintln!("skipped: {reason}");
+            true
+        }
+
+        fn run(command: &mut Command) {
+            let output = command.output().expect("run tool");
+            assert!(
+                output.status.success(),
+                "{command:?}\n{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        fn cross_call(label: &str, target: &str, cc: &str, extra: &[&str], runner: Option<&str>) {
+            let guard = TempDir::new(label);
+            let dir: &Path = guard.path();
+            let source = dir.join("abi.lamina");
+            let asm = dir.join("abi.s");
+            let driver = dir.join("driver.c");
+            let binary = dir.join("abi");
+            fs::write(&source, LAMINA).expect("write lamina");
+            fs::write(&driver, DRIVER).expect("write driver");
+            run(Command::new(lamina_binary())
+                .arg(&source)
+                .args(["--target", target, "--emit-asm", "-o"])
+                .arg(&asm));
+            run(Command::new(cc)
+                .args(extra)
+                .arg("-O1")
+                .arg("-o")
+                .arg(&binary)
+                .arg(&driver)
+                .arg(&asm));
+            let mut call = match runner {
+                Some(runner) => {
+                    let mut command = Command::new(runner);
+                    command.arg(&binary);
+                    command
+                }
+                None => Command::new(&binary),
+            };
+            let output = call.output().expect("run cross-toolchain program");
+            assert!(
+                output.status.success(),
+                "{target}:\n{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        // Gated rather than returning early: a macOS run would otherwise report this as passed.
+        #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
+        #[test]
+        fn x86_64_agrees_with_gcc_on_packed_aggregate_arguments() {
+            if !have("gcc") && skip("gcc is not installed") {
+                return;
+            }
+            cross_call("lamina-crosscall-x86_64", "x86_64_linux", "gcc", &[], None);
+        }
+
+        #[test]
+        fn aarch64_agrees_with_gcc_on_packed_aggregate_arguments() {
+            if !have("aarch64-linux-gnu-gcc") && skip("aarch64-linux-gnu-gcc is not installed") {
+                return;
+            }
+            let Some(runner) = emulator("qemu-aarch64-static") else {
+                skip("no qemu-aarch64 is installed");
+                return;
+            };
+            cross_call(
+                "lamina-crosscall-aarch64",
+                "aarch64_linux",
+                "aarch64-linux-gnu-gcc",
+                &["-static"],
+                Some(runner),
+            );
+        }
+    }
+
+    /// Stack argument alignment at a call.
+    mod argument_alignment {
+        use crate::test_support::TempDir;
+        use crate::test_support::lamina_binary;
+        use std::{fs, process::Command};
+
+        const PAIR_THEN_I64: &str = "fn @pair(i64 %a, i128 %b) -> i64 {\nentry:\n  %x = trunc.i128.i64 %b\n  %r = add.i64 %a, %x\n  ret.i64 %r\n}\n";
+
+        const I128_THEN_I64: &str = "fn @skip(i64 %a, i128 %b, i64 %c) -> i64 {\nentry:\n  %x = trunc.i128.i64 %b\n  %r = add.i64 %a, %x\n  %r2 = add.i64 %r, %c\n  ret.i64 %r2\n}\n";
+
+        fn assemble(target: &str, source: &str) -> String {
+            let guard = TempDir::new("lamina-argument-alignment");
+            let input = guard.path().join("probe.lamina");
+            let output = guard.path().join("probe.s");
+            fs::write(&input, source).expect("write program");
+            let run = Command::new(lamina_binary())
+                .arg(&input)
+                .args(["--target", target, "--emit-asm", "-o"])
+                .arg(&output)
+                .output()
+                .expect("run lamina");
+            assert!(
+                run.status.success(),
+                "{}",
+                String::from_utf8_lossy(&run.stderr)
+            );
+            fs::read_to_string(&output).expect("read assembly")
+        }
+
+        fn spills(asm: &str, prefix: &str) -> Vec<String> {
+            asm.lines()
+                .map(str::trim)
+                .filter(|line| line.starts_with(prefix))
+                .map(str::to_string)
+                .collect()
+        }
+
+        #[test]
+        fn aarch64_i128_takes_even_register_pair() {
+            let asm = assemble("aarch64_linux", PAIR_THEN_I64);
+            let stores = spills(&asm, "str x");
+            assert!(
+                stores.iter().any(|l| l.starts_with("str x2, ")),
+                "{stores:?}"
+            );
+            assert!(
+                stores.iter().any(|l| l.starts_with("str x3, ")),
+                "{stores:?}"
+            );
+            assert!(
+                !stores.iter().any(|l| l.starts_with("str x1, ")),
+                "{stores:?}"
+            );
+        }
+
+        #[test]
+        fn aarch64_skipped_register_is_not_backfilled() {
+            let asm = assemble("aarch64_linux", I128_THEN_I64);
+            // A whole word goes straight to its register, or to its frame slot without a plan.
+            let reads = |register: &str| {
+                asm.lines().map(str::trim).any(|line| {
+                    line.starts_with(&format!("str {register}, "))
+                        || (line.starts_with("mov ") && line.ends_with(&format!(", {register}")))
+                })
+            };
+            assert!(reads("x4"), "{asm}");
+            assert!(!reads("x1"), "{asm}");
+        }
+
+        #[test]
+        fn riscv64_i128_stays_in_next_pair_without_skip() {
+            let asm = assemble("riscv64_linux", PAIR_THEN_I64);
+            let stores = spills(&asm, "sd a");
+            assert!(stores.iter().any(|l| l.starts_with("sd a1,")), "{stores:?}");
+            assert!(stores.iter().any(|l| l.starts_with("sd a2,")), "{stores:?}");
+            assert!(
+                !stores.iter().any(|l| l.starts_with("sd a3,")),
+                "{stores:?}"
+            );
+        }
+
+        #[test]
+        fn ppc64le_i128_stays_in_next_pair_without_skip() {
+            let asm = assemble("ppc64le_linux", PAIR_THEN_I64);
+            let stores = spills(&asm, "std ");
+            assert!(stores.iter().any(|l| l.starts_with("std 4,")), "{stores:?}");
+            assert!(stores.iter().any(|l| l.starts_with("std 5,")), "{stores:?}");
+            assert!(
+                !stores.iter().any(|l| l.starts_with("std 6,")),
+                "{stores:?}"
+            );
+        }
+    }
+
+    /// A vector that no register on the target can hold, and a target with no vector unit,
+    /// are both refused by name rather than split or scalarized behind the programmer's back.
+    mod vector_targets {
+        use crate::test_support::TempDir;
+        use crate::test_support::lamina_binary;
+        use std::{fs, process::Command};
+
+        const PROGRAM: &str = "fn @main() -> i64 {\nentry:\n  %a = splat.<4 x i32> 3\n  %b = add.<4 x i32> %a, %a\n  %x = extractlane.<4 x i32> %b, 2\n  %r = extend.i32.i64 %x\n  ret.i64 %r\n}\n";
+
+        const WIDE: &str = "fn @main() -> i64 {\nentry:\n  %a = splat.<4 x i64> 3\n  %b = add.<4 x i64> %a, %a\n  %x = extractlane.<4 x i64> %b, 2\n  ret.i64 %x\n}\n";
+
+        fn compile(source: &str, target: &str) -> (bool, String) {
+            compile_at(source, target, &[])
+        }
+
+        fn compile_at(source: &str, target: &str, extra: &[&str]) -> (bool, String) {
+            let guard = TempDir::new("lamina-vector-target");
+            let input = guard.path().join("vector.lamina");
+            let asm = guard.path().join("vector.s");
+            fs::write(&input, source).expect("write program");
+            let out = Command::new(lamina_binary())
+                .arg(&input)
+                .args(["--target", target, "--emit-asm", "-o"])
+                .arg(&asm)
+                .args(extra)
+                .output()
+                .expect("run lamina");
+            let text = format!(
+                "{}{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+            (out.status.success(), text)
+        }
+
+        #[test]
+        fn targets_with_a_vector_unit_accept_the_surface() {
+            for target in ["x86_64_linux", "aarch64_linux", "wasm32_wasi"] {
+                let (ok, text) = compile(PROGRAM, target);
+                assert!(ok, "{target} refused a 128-bit vector:\n{text}");
+            }
+        }
+
+        #[test]
+        fn targets_without_a_vector_unit_refuse_by_name() {
+            for (target, name) in [
+                ("s390x_linux", "s390x vector operations"),
+                ("mips64_linux", "mips64 vector operations"),
+                ("loongarch64_linux", "LoongArch64 vector operations"),
+                (
+                    "armv7_linux",
+                    "armv7 backend does not implement vector operations",
+                ),
+                ("ppc64le_linux", "PowerPC64 vector operations"),
+            ] {
+                let (ok, text) = compile(PROGRAM, target);
+                assert!(!ok, "{target} accepted a vector:\n{text}");
+                assert!(text.contains(name), "{target} did not name itself:\n{text}");
+            }
+        }
+
+        #[test]
+        fn a_vector_wider_than_the_target_register_is_refused_by_name() {
+            let (ok, text) = compile(WIDE, "x86_64_linux");
+            assert!(!ok, "x86_64 accepted a 256-bit vector:\n{text}");
+            assert!(text.contains("x86_64 V256 is not implemented"), "{text}");
+
+            let (ok, text) = compile(PROGRAM, "riscv64_linux");
+            assert!(!ok, "rv64imafd accepted a vector:\n{text}");
+            assert!(
+                text.contains("V extension is required for vectors"),
+                "{text}"
+            );
+        }
+
+        #[test]
+        fn a_256_bit_vector_is_refused_as_unimplemented_at_every_cpu_level() {
+            for level in ["v1", "v2", "v3", "v4"] {
+                let (ok, text) = compile_at(WIDE, "x86_64_linux", &["--cpu-level", level]);
+                assert!(!ok, "{level} accepted a 256-bit vector:\n{text}");
+                assert!(
+                    text.contains("x86_64 V256 is not implemented"),
+                    "{level}: {text}"
+                );
+            }
+        }
+
+        #[test]
+        fn the_v_extension_can_be_named_in_a_target_string() {
+            let (ok, text) = compile(PROGRAM, "rv64gcv_linux");
+            assert!(ok, "rv64gcv refused a vector:\n{text}");
+
+            let guard = TempDir::new("lamina-rvv");
+            let input = guard.path().join("vector.lamina");
+            let asm = guard.path().join("vector.s");
+            fs::write(&input, PROGRAM).expect("write program");
+            let out = Command::new(lamina_binary())
+                .arg(&input)
+                .args(["--target", "rv64gcv_linux", "--emit-asm", "-o"])
+                .arg(&asm)
+                .output()
+                .expect("run lamina");
+            assert!(out.status.success());
+            let text = fs::read_to_string(&asm).expect("read asm");
+            for mnemonic in ["vsetivli", "vmv.v.x", "vadd.vv", "vslidedown.vi"] {
+                assert!(text.contains(mnemonic), "missing {mnemonic}:\n{text}");
+            }
+        }
+    }
 }

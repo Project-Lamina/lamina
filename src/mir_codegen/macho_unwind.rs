@@ -238,8 +238,10 @@ mod tests {
     fn optimized_object(target: &str, ir: &str) -> Vec<u8> {
         let target = Target::from_str(target).expect("target string parses");
         let module = parse_module(ir).expect("module parses");
-        let mut build = ObjectBuild::default();
-        build.opt_level = 2;
+        let build = ObjectBuild {
+            opt_level: 2,
+            ..ObjectBuild::default()
+        };
         compile_module_to_object_with(&module, target, &build).expect("object bytes")
     }
 

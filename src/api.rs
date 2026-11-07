@@ -367,8 +367,10 @@ mod tests {
         let plain = compile_module_to_object_with(&module, target, &ObjectBuild::default())
             .expect("object bytes");
 
-        let mut debug = ObjectBuild::default();
-        debug.debug_lines = true;
+        let debug = ObjectBuild {
+            debug_lines: true,
+            ..ObjectBuild::default()
+        };
         let with_lines = compile_module_to_object_with(&module, target, &debug)
             .expect("object bytes with lines");
         assert!(
@@ -378,8 +380,10 @@ mod tests {
             plain.len()
         );
 
-        let mut unoptimized = ObjectBuild::default();
-        unoptimized.opt_level = 0;
+        let unoptimized = ObjectBuild {
+            opt_level: 0,
+            ..ObjectBuild::default()
+        };
         let at_zero =
             compile_module_to_object_with(&module, target, &unoptimized).expect("object at opt 0");
         assert_ne!(at_zero, plain, "opt level did not reach the pipeline");

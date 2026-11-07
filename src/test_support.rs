@@ -4,7 +4,7 @@
 pub mod macho;
 
 use std::{
-    fs,
+    env, fs,
     path::{Path, PathBuf},
     process,
     sync::atomic::{AtomicUsize, Ordering},
@@ -42,4 +42,22 @@ impl Drop for TempDir {
         }
         let _ = fs::remove_dir_all(&self.path);
     }
+}
+
+/// The `lamina` executable beside this test binary. `cargo test` builds it as part of
+/// the bin target; `cargo test --lib` does not, so say which command is missing rather
+/// than failing later on an absent program.
+pub fn lamina_binary() -> PathBuf {
+    let mut path = env::current_exe().expect("test binary path");
+    path.pop();
+    if path.ends_with("deps") {
+        path.pop();
+    }
+    let lamina = path.join("lamina");
+    assert!(
+        lamina.is_file(),
+        "{} is not built: run `cargo build --bin lamina`",
+        lamina.display()
+    );
+    lamina
 }

@@ -2265,8 +2265,9 @@ fn macos_block_labels_stay_out_of_the_symbol_table() {
     assert!(linux.contains("\n.L_pick.zero:\n"), "{linux}");
 }
 
+/// Objects this backend writes, read back from their bytes.
 #[cfg(test)]
-mod tests {
+mod objects {
     use crate::api::{Target, compile_module_to_object};
     use crate::parser::parse_module;
     use crate::test_support::macho::{MachO, Section};
