@@ -10,7 +10,7 @@ use lamina_platform::{ArchVariant, X86CpuLevel};
 
 fn emit(module: &Module, level: X86CpuLevel) -> Result<String, LaminaError> {
     let settings = MirCodegenSettings {
-        arch_variant: ArchVariant::X86(level),
+        arch_variant: ArchVariant::X86(level.into()),
         ..MirCodegenSettings::default()
     };
     let mut out = Vec::new();

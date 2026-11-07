@@ -34,7 +34,7 @@ pub use arch_table::{
 pub use arch_variant::{
     Aarch64Level, ArchVariant, Armv7Profile, Armv7Variant, PowerLevel, RiscvIsa, VariantAxis,
 };
-pub use cpu_level::X86CpuLevel;
+pub use cpu_level::{X86CpuLevel, X86Features};
 pub use detection::{cpu_count, detect_host_architecture_only, detect_host_os};
 pub use environment::{CompilerRuntime, Libc, TargetEnvironment};
 pub use shared::{DEFAULT_SOURCE_FILE, MemoryOrdering, SourceLoc, TlsModel};

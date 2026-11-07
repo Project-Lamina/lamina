@@ -602,7 +602,7 @@ mod tests {
 
     use super::*;
     use crate::arch_variant::VariantAxis;
-    use crate::cpu_level::X86CpuLevel;
+    use crate::cpu_level::{X86CpuLevel, X86Features};
     use crate::environment::{CompilerRuntime, Libc};
 
     fn listed(name: &str) -> bool {
@@ -938,17 +938,20 @@ mod tests {
             .with_variant(ArchVariant::Riscv(RiscvIsa::general(64)));
         assert_eq!(aarch64.variant, ArchVariant::Aarch64(Aarch64Level::V8_0));
         let riscv = Target::new(TargetArchitecture::Riscv64, TargetOperatingSystem::Linux)
-            .with_variant(ArchVariant::X86(X86CpuLevel::V4));
+            .with_variant(ArchVariant::X86(X86Features::at(X86CpuLevel::V4)));
         assert_eq!(riscv.variant, ArchVariant::Riscv(RiscvIsa::general(64)));
     }
 
     #[test]
     fn x86_cpu_level_is_a_variant_axis_like_the_others() {
         let spec = TargetArchitecture::X86_64.spec();
-        assert_eq!(spec.variants, VariantAxis::X86(X86CpuLevel::V2));
+        assert_eq!(
+            spec.variants,
+            VariantAxis::X86(X86Features::at(X86CpuLevel::V2))
+        );
         let target = Target::new(TargetArchitecture::X86_64, TargetOperatingSystem::Linux)
-            .with_variant(ArchVariant::X86(X86CpuLevel::V3));
-        assert_eq!(target.variant.x86(), Some(X86CpuLevel::V3));
+            .with_variant(ArchVariant::X86(X86Features::at(X86CpuLevel::V3)));
+        assert_eq!(target.variant.x86(), Some(X86Features::at(X86CpuLevel::V3)));
     }
 
     #[test]

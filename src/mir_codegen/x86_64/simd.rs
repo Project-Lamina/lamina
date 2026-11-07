@@ -539,7 +539,7 @@ mod tests {
             1,
             &MirCodegenSettings {
                 regalloc: strategy,
-                arch_variant: ArchVariant::X86(level),
+                arch_variant: ArchVariant::X86(level.into()),
                 ..Default::default()
             },
         )

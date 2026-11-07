@@ -25,7 +25,7 @@ fn assembly_at(module: &Module, level: X86CpuLevel) -> Result<String, LaminaErro
         TargetOperatingSystem::Linux,
         1,
         &MirCodegenSettings {
-            arch_variant: ArchVariant::X86(level),
+            arch_variant: ArchVariant::X86(level.into()),
             ..MirCodegenSettings::default()
         },
     )?;

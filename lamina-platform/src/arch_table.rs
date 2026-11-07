@@ -13,7 +13,7 @@
 use crate::arch_variant::{
     Aarch64Level, ArchVariant, Armv7Variant, PowerLevel, RiscvIsa, VariantAxis,
 };
-use crate::cpu_level::X86CpuLevel;
+use crate::cpu_level::{X86CpuLevel, X86Features};
 use crate::environment::TargetEnvironment;
 
 /// Width of a data pointer. Pointer size and alignment derive from it.
@@ -369,7 +369,7 @@ arch_table! {
         },
         toolchain: { gnu: Some("x86_64-linux-gnu"), musl: Some("x86_64-linux-musl"), lamina: None },
         msvc_library_arch: Some("x64"),
-        variants: VariantAxis::X86(X86CpuLevel::V2),
+        variants: VariantAxis::X86(X86Features::at(X86CpuLevel::V2)),
     }
 
     Aarch64 {

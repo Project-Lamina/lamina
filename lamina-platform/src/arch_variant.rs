@@ -6,7 +6,7 @@
 use std::{fmt, str::FromStr};
 
 use crate::arch_table::{ArchSpec, FloatAggregateAbi};
-use crate::cpu_level::X86CpuLevel;
+use crate::cpu_level::X86Features;
 
 /// RISC-V base width plus the standard extensions the backend decides on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -24,6 +24,11 @@ pub struct RiscvIsa {
     pub c: bool,
     /// V: the vector extension.
     pub v: bool,
+    /// Zfh: scalar half-precision arithmetic.
+    pub zfh: bool,
+    /// Zfbfmin: scalar bfloat16 conversion to and from single precision. There is no
+    /// bfloat16 arithmetic in it; the format is for storage and conversion.
+    pub zfbfmin: bool,
 }
 
 impl RiscvIsa {
@@ -37,6 +42,8 @@ impl RiscvIsa {
             d: false,
             c: false,
             v: false,
+            zfh: false,
+            zfbfmin: false,
         }
     }
 
@@ -50,6 +57,8 @@ impl RiscvIsa {
             d: true,
             c: false,
             v: false,
+            zfh: false,
+            zfbfmin: false,
         }
     }
 
@@ -70,6 +79,19 @@ impl RiscvIsa {
         ] {
             if present {
                 s.push(letter);
+            }
+        }
+        s.push_str(&self.z_extensions());
+        s
+    }
+
+    /// The `_`-separated Z extensions, in the order they are written.
+    fn z_extensions(self) -> String {
+        let mut s = String::new();
+        for (present, name) in [(self.zfh, "zfh"), (self.zfbfmin, "zfbfmin")] {
+            if present {
+                s.push('_');
+                s.push_str(name);
             }
         }
         s
@@ -94,6 +116,7 @@ impl RiscvIsa {
         if self.v {
             s.push('v');
         }
+        s.push_str(&self.z_extensions());
         s
     }
 }
@@ -101,8 +124,10 @@ impl RiscvIsa {
 impl FromStr for RiscvIsa {
     type Err = &'static str;
 
-    /// `rv32imac`, `rv64gc`, `rv64g`, `rv32i`. `g` expands to `imafd`.
+    /// `rv32imac`, `rv64gc`, `rv64g`, `rv32i`. `g` expands to `imafd`. A multi-letter
+    /// Z extension follows an underscore: `rv64gc_zfh_zfbfmin`.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let (s, z_extensions) = s.split_once('_').unwrap_or((s, ""));
         let rest = s.strip_prefix("rv").ok_or("expected an rv… ISA string")?;
         let split = rest
             .find(|c: char| !c.is_ascii_digit())
@@ -140,6 +165,16 @@ impl FromStr for RiscvIsa {
         }
         if !seen_base {
             return Err("RISC-V ISA string needs a base, 'i' or 'g'");
+        }
+        for extension in z_extensions.split('_').filter(|e| !e.is_empty()) {
+            match extension {
+                "zfh" => isa.zfh = true,
+                "zfbfmin" => isa.zfbfmin = true,
+                _ => return Err("unknown RISC-V Z extension"),
+            }
+        }
+        if (isa.zfh || isa.zfbfmin) && !isa.f {
+            return Err("Zfh and Zfbfmin need F underneath them");
         }
         Ok(isa)
     }
@@ -207,32 +242,58 @@ impl Default for Armv7Variant {
     }
 }
 
-/// AArch64 architecture revision. LSE atomics arrive in v8.1.
+/// AArch64 architecture revision. LSE atomics arrive in v8.1, FEAT_FP16 in v8.2 and
+/// FEAT_BF16 in v8.6.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
 pub enum Aarch64Level {
     #[default]
     V8_0,
     V8_1,
     V8_2,
+    V8_3,
+    V8_4,
+    V8_5,
+    V8_6,
 }
 
 impl Aarch64Level {
+    pub const ALL: [Aarch64Level; 7] = [
+        Self::V8_0,
+        Self::V8_1,
+        Self::V8_2,
+        Self::V8_3,
+        Self::V8_4,
+        Self::V8_5,
+        Self::V8_6,
+    ];
+
     /// `-march=` string for an assembler.
     pub const fn march(self) -> &'static str {
         match self {
             Self::V8_0 => "armv8-a",
             Self::V8_1 => "armv8.1-a",
             Self::V8_2 => "armv8.2-a",
+            Self::V8_3 => "armv8.3-a",
+            Self::V8_4 => "armv8.4-a",
+            Self::V8_5 => "armv8.5-a",
+            Self::V8_6 => "armv8.6-a",
         }
     }
 
     /// Large System Extensions: single-instruction atomics instead of a load/store
     /// exclusive loop.
     pub const fn has_lse_atomics(self) -> bool {
-        match self {
-            Self::V8_0 => false,
-            Self::V8_1 | Self::V8_2 => true,
-        }
+        !matches!(self, Self::V8_0)
+    }
+
+    /// FEAT_FP16: half-precision arithmetic rather than conversion alone.
+    pub const fn has_fp16(self) -> bool {
+        !matches!(self, Self::V8_0 | Self::V8_1)
+    }
+
+    /// FEAT_BF16: bfloat16 conversion and dot product.
+    pub const fn has_bf16(self) -> bool {
+        matches!(self, Self::V8_6)
     }
 }
 
@@ -273,7 +334,7 @@ pub enum ArchVariant {
     Armv7(Armv7Variant),
     Aarch64(Aarch64Level),
     PowerPC64(PowerLevel),
-    X86(X86CpuLevel),
+    X86(X86Features),
 }
 
 impl ArchVariant {
@@ -304,7 +365,7 @@ impl ArchVariant {
         }
     }
 
-    pub fn x86(self) -> Option<X86CpuLevel> {
+    pub fn x86(self) -> Option<X86Features> {
         match self {
             Self::X86(level) => Some(level),
             Self::None
@@ -364,6 +425,36 @@ impl fmt::Display for ArchVariant {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// FEAT_FP16 arrives in v8.2 and FEAT_BF16 in v8.6, so the revision alone answers
+    /// which half-precision format a target has.
+    #[test]
+    fn aarch64_half_precision_follows_the_revision() {
+        for level in Aarch64Level::ALL {
+            assert_eq!(level.has_fp16(), level >= Aarch64Level::V8_2, "{level:?}");
+            assert_eq!(level.has_bf16(), level == Aarch64Level::V8_6, "{level:?}");
+            assert_eq!(level.has_lse_atomics(), level >= Aarch64Level::V8_1);
+        }
+        assert_eq!(Aarch64Level::V8_6.march(), "armv8.6-a");
+    }
+
+    /// A Z extension is written after an underscore, and the name round trips.
+    #[test]
+    fn riscv_half_precision_extensions_parse_and_print() {
+        let isa: RiscvIsa = "rv64gc_zfh_zfbfmin".parse().expect("rv64gc_zfh_zfbfmin");
+        assert!(isa.zfh && isa.zfbfmin && isa.c && isa.d);
+        assert_eq!(isa.name(), "rv64imafdc_zfh_zfbfmin");
+        assert_eq!(isa.march(), "rv64gc_zfh_zfbfmin");
+        assert!(!"rv64gc".parse::<RiscvIsa>().expect("rv64gc").zfh);
+        assert!("rv64gc_zve32x".parse::<RiscvIsa>().is_err());
+    }
+
+    /// Both are floating-point extensions, so neither means anything without F.
+    #[test]
+    fn a_riscv_half_precision_extension_without_f_is_refused() {
+        let error = "rv64imc_zfh".parse::<RiscvIsa>().expect_err("needs F");
+        assert!(error.contains("need F"), "{error}");
+    }
 
     #[test]
     fn isa_strings_round_trip() {
@@ -437,7 +528,7 @@ pub enum VariantAxis {
     Armv7(Armv7Variant),
     Aarch64(Aarch64Level),
     Power(PowerLevel),
-    X86(X86CpuLevel),
+    X86(X86Features),
 }
 
 impl VariantAxis {

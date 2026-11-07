@@ -15,7 +15,7 @@
 //!   more accurate but requires the code to run on the target CPU.
 
 use crate::arch_variant::Aarch64Level;
-use crate::cpu_level::X86CpuLevel;
+use crate::cpu_level::{X86CpuLevel, X86Features};
 use crate::target::{Target, TargetArchitecture};
 
 #[cfg(target_arch = "aarch64")]
@@ -151,7 +151,7 @@ impl SimdCapabilities {
     /// # use lamina_platform::simd::SimdCapabilities;
     /// # #[cfg(feature = "nightly")]
     /// # {
-    /// # use lamina_platform::{ArchVariant, X86CpuLevel};
+    /// # use lamina_platform::{ArchVariant, X86CpuLevel, X86Features};
     /// let target = Target::new(TargetArchitecture::X86_64, TargetOperatingSystem::Linux);
     /// let caps = SimdCapabilities::detect(&target);
     /// assert!(caps.supported);
@@ -159,7 +159,7 @@ impl SimdCapabilities {
     /// // AVX needs v3; the default level is v2, which stops at SSE4.2.
     /// assert!(!caps.v256_supported);
     /// let avx2 = Target::new(TargetArchitecture::X86_64, TargetOperatingSystem::Linux)
-    ///     .with_variant(ArchVariant::X86(X86CpuLevel::V3));
+    ///     .with_variant(ArchVariant::X86(X86Features::at(X86CpuLevel::V3)));
     /// assert!(SimdCapabilities::detect(&avx2).v256_supported);
     /// # }
     /// ```
@@ -202,9 +202,11 @@ impl SimdCapabilities {
     /// part that only has that much. `detect_runtime` raises this for the machine it
     /// is running on.
     ///
-    /// Neither AVX-512-FP16 nor AVX-512-BF16 belongs to any level, so bf16 is false
-    /// here whatever the level is, and fp16 means F16C conversion from v3 on.
-    fn detect_x86_64(level: X86CpuLevel) -> Self {
+    /// Neither AVX-512-FP16 nor AVX-512-BF16 belongs to any level, so each is reported
+    /// only when the target names it. Without AVX-512-FP16, `fp16` means the F16C
+    /// conversion instructions that arrive with v3, not half-precision arithmetic.
+    fn detect_x86_64(features: X86Features) -> Self {
+        let level = features.level;
         let mut x86_extensions = vec![X86SimdExtension::Sse2];
         if level >= X86CpuLevel::V2 {
             x86_extensions.extend([
@@ -230,6 +232,9 @@ impl SimdCapabilities {
                 X86SimdExtension::Avx512dq,
             ]);
         }
+        if features.avx512_bf16 {
+            x86_extensions.push(X86SimdExtension::Avx512bf16);
+        }
         let v256 = level >= X86CpuLevel::V3;
         let v512 = level >= X86CpuLevel::V4;
         Self {
@@ -247,8 +252,8 @@ impl SimdCapabilities {
             float_simd_supported: true,
             integer_simd_supported: true,
             fma_supported: level >= X86CpuLevel::V3,
-            fp16_supported: level >= X86CpuLevel::V3,
-            bf16_supported: false,
+            fp16_supported: features.avx512_fp16 || level >= X86CpuLevel::V3,
+            bf16_supported: features.avx512_bf16,
             x86_extensions,
             arm_extensions: Vec::new(),
             riscv_extensions: Vec::new(),
@@ -259,8 +264,8 @@ impl SimdCapabilities {
     ///
     /// NEON is baseline and is 128 bits wide; SVE is optional and names its width only
     /// at run time, so nothing wider is claimed here. Half-precision arithmetic is
-    /// FEAT_FP16, which arrives in v8.2. BF16 is FEAT_BF16, which arrives in v8.6 and
-    /// is past the highest revision this axis can name, so it is false throughout.
+    /// FEAT_FP16, which arrives in v8.2, and bfloat16 is FEAT_BF16, which arrives in
+    /// v8.6.
     fn detect_aarch64(level: Aarch64Level) -> Self {
         Self {
             supported: true,
@@ -271,8 +276,8 @@ impl SimdCapabilities {
             float_simd_supported: true,
             integer_simd_supported: true,
             fma_supported: true,
-            fp16_supported: level >= Aarch64Level::V8_2,
-            bf16_supported: false,
+            fp16_supported: level.has_fp16(),
+            bf16_supported: level.has_bf16(),
             x86_extensions: Vec::new(),
             arm_extensions: vec![ArmSimdExtension::Neon],
             riscv_extensions: Vec::new(),
@@ -393,9 +398,9 @@ impl SimdCapabilities {
     /// # use lamina_platform::simd::SimdCapabilities;
     /// # #[cfg(feature = "nightly")]
     /// # {
-    /// # use lamina_platform::{ArchVariant, X86CpuLevel};
+    /// # use lamina_platform::{ArchVariant, X86CpuLevel, X86Features};
     /// let target = Target::new(TargetArchitecture::X86_64, TargetOperatingSystem::Linux)
-    ///     .with_variant(ArchVariant::X86(X86CpuLevel::V4));
+    ///     .with_variant(ArchVariant::X86(X86Features::at(X86CpuLevel::V4)));
     /// let caps = SimdCapabilities::detect(&target);
     /// assert!(caps.supports_vector_width(128));
     /// assert!(caps.supports_vector_width(256));
@@ -733,7 +738,7 @@ mod tests {
 
     fn x86_at(level: X86CpuLevel) -> SimdCapabilities {
         let target = Target::new(TargetArchitecture::X86_64, TargetOperatingSystem::Linux)
-            .with_variant(ArchVariant::X86(level));
+            .with_variant(ArchVariant::X86(X86Features::at(level)));
         SimdCapabilities::detect(&target)
     }
 

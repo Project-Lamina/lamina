@@ -9,7 +9,7 @@ use crate::mir_codegen::{
 };
 use lamina_mir::Module as MirModule;
 use lamina_platform::{
-    ArchVariant, Target, TargetArchitecture, TargetOperatingSystem, X86CpuLevel, host_arch_list,
+    ArchVariant, Target, TargetArchitecture, TargetOperatingSystem, X86Features, host_arch_list,
     target_alias_list,
 };
 use ras::ObjectWriteOptions;
@@ -307,7 +307,7 @@ pub(crate) fn parse_args_from(args: Vec<String>) -> Result<CompileOptions, CliEr
                 }
                 options.mir_codegen_settings.arch_variant = ArchVariant::X86(
                     args[i + 1]
-                        .parse::<X86CpuLevel>()
+                        .parse::<X86Features>()
                         .map_err(|e| CliError::Diagnosis(format!("--cpu-level: {e}")))?,
                 );
                 options.cpu_level_explicit = true;
@@ -456,6 +456,7 @@ pub(crate) fn parse_args_from(args: Vec<String>) -> Result<CompileOptions, CliEr
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lamina_platform::X86CpuLevel;
 
     fn parse(args: &[&str]) -> Result<CompileOptions, String> {
         let mut all = vec!["lamina".to_string(), "prog.lamina".to_string()];
@@ -531,6 +532,18 @@ mod tests {
             options.mir_codegen_settings.x86_cpu_level(),
             X86CpuLevel::V2
         );
+    }
+
+    /// AVX-512-FP16 and AVX-512-BF16 are not levels, so `--cpu-level` takes them as
+    /// extensions written after the level they need.
+    #[test]
+    fn cpu_level_flag_takes_the_avx512_extensions() {
+        let options = parse(&["--cpu-level", "v4+bf16", "--target", "x86_64_linux"])
+            .expect("v4+bf16 parses on x86_64");
+        let features = options.mir_codegen_settings.x86_features();
+        assert_eq!(features.level, X86CpuLevel::V4);
+        assert!(features.avx512_bf16 && !features.avx512_fp16);
+        assert!(parse(&["--cpu-level", "v3+bf16", "--target", "x86_64_linux"]).is_err());
     }
 
     #[test]

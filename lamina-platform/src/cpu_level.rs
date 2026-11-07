@@ -57,6 +57,86 @@ impl FromStr for X86CpuLevel {
     }
 }
 
+/// What an x86-64 target has: the psABI microarchitecture level, plus the extensions
+/// that belong to no level and so have to be named on their own.
+///
+/// AVX-512-FP16 and AVX-512-BF16 are not on the v1..v4 ladder. FP16 arrives with
+/// Sapphire Rapids; BF16 with Cooper Lake, Sapphire Rapids and Zen 4. A part may have
+/// BF16 without FP16, so neither implies the other, and both need v4 underneath them
+/// because they are AVX-512 encodings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct X86Features {
+    pub level: X86CpuLevel,
+    /// AVX-512-FP16: half-precision arithmetic, not just conversion.
+    pub avx512_fp16: bool,
+    /// AVX-512-BF16: bfloat16 conversion and dot product.
+    pub avx512_bf16: bool,
+}
+
+impl X86Features {
+    pub const fn at(level: X86CpuLevel) -> Self {
+        Self {
+            level,
+            avx512_fp16: false,
+            avx512_bf16: false,
+        }
+    }
+
+    /// Whether the level underneath these extensions can encode them. Both are
+    /// AVX-512, so neither means anything below v4.
+    pub const fn extensions_are_encodable(self) -> bool {
+        !(self.avx512_fp16 || self.avx512_bf16) || matches!(self.level, X86CpuLevel::V4)
+    }
+}
+
+impl From<X86CpuLevel> for X86Features {
+    fn from(level: X86CpuLevel) -> Self {
+        Self::at(level)
+    }
+}
+
+impl fmt::Display for X86Features {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.level)?;
+        if self.avx512_fp16 {
+            write!(f, "+fp16")?;
+        }
+        if self.avx512_bf16 {
+            write!(f, "+bf16")?;
+        }
+        Ok(())
+    }
+}
+
+impl FromStr for X86Features {
+    type Err = String;
+
+    /// `v3`, `x86-64-v4`, `v4+bf16`, `v4+fp16+bf16`.
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let mut parts = s.split('+');
+        let level: X86CpuLevel = parts.next().unwrap_or_default().parse()?;
+        let mut out = Self::at(level);
+        for extension in parts {
+            match extension.to_ascii_lowercase().as_str() {
+                "fp16" | "avx512fp16" => out.avx512_fp16 = true,
+                "bf16" | "avx512bf16" => out.avx512_bf16 = true,
+                other => {
+                    return Err(format!(
+                        "unknown x86 extension '{other}' (expected fp16 or bf16)"
+                    ));
+                }
+            }
+        }
+        if !out.extensions_are_encodable() {
+            return Err(format!(
+                "{} needs x86-64-v4 underneath it, which is where AVX-512 starts",
+                if out.avx512_fp16 { "fp16" } else { "bf16" }
+            ));
+        }
+        Ok(out)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -77,5 +157,29 @@ mod tests {
         assert!(X86CpuLevel::V4 > X86CpuLevel::V3);
         assert_eq!(X86CpuLevel::default(), X86CpuLevel::V2);
         assert_eq!(X86CpuLevel::V2.to_string(), "x86-64-v2");
+    }
+
+    /// AVX-512-FP16 and AVX-512-BF16 are not on the v1..v4 ladder, so a target names
+    /// them beside the level rather than reaching them by going up.
+    #[test]
+    fn x86_extensions_are_named_beside_the_level() {
+        assert_eq!(X86Features::at(X86CpuLevel::V4), "v4".parse().unwrap());
+        let bf16: X86Features = "v4+bf16".parse().unwrap();
+        assert!(bf16.avx512_bf16 && !bf16.avx512_fp16);
+        assert_eq!(bf16.level, X86CpuLevel::V4);
+        let both: X86Features = "x86-64-v4+fp16+bf16".parse().unwrap();
+        assert!(both.avx512_fp16 && both.avx512_bf16);
+        assert_eq!(both.to_string(), "x86-64-v4+fp16+bf16");
+        assert!("v4+sve".parse::<X86Features>().is_err());
+    }
+
+    /// Both are AVX-512 encodings, so neither means anything below v4.
+    #[test]
+    fn an_avx512_extension_below_v4_is_refused() {
+        for level in ["v1", "v2", "v3"] {
+            let error = format!("{level}+bf16").parse::<X86Features>().unwrap_err();
+            assert!(error.contains("x86-64-v4"), "{error}");
+        }
+        assert!("v4+bf16".parse::<X86Features>().is_ok());
     }
 }

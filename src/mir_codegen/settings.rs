@@ -2,7 +2,7 @@
 
 use lamina_platform::{
     ArchVariant, TargetArchitecture, TargetEnvironment, TargetOperatingSystem, X86CpuLevel,
-    default_environment,
+    X86Features, default_environment,
 };
 #[cfg(feature = "nightly")]
 use lamina_platform::{SimdCapabilities, Target};
@@ -145,6 +145,12 @@ impl MirCodegenSettings {
     /// [`crate::mir_codegen::CodegenError::CpuLevelRequired`]. It is the x86 arm of the
     /// variant axis, so it is read from [`MirCodegenSettings::arch_variant`].
     pub fn x86_cpu_level(&self) -> X86CpuLevel {
+        self.x86_features().level
+    }
+
+    /// Everything the x86-64 target declares: the level, and the AVX-512 extensions
+    /// that belong to no level and so are named on their own.
+    pub fn x86_features(&self) -> X86Features {
         self.arch_variant.x86().unwrap_or_default()
     }
 
