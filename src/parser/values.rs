@@ -36,7 +36,12 @@ pub fn integer_literal(value: i128, ty: PrimitiveType) -> Result<Option<Literal<
         PrimitiveType::U64 => Literal::U64(value as u64),
         PrimitiveType::I128 => Literal::I128(value),
         PrimitiveType::U128 => Literal::U128(value as u128),
-        PrimitiveType::F32 | PrimitiveType::F64 | PrimitiveType::Bool | PrimitiveType::Ptr => {
+        PrimitiveType::F16
+        | PrimitiveType::BF16
+        | PrimitiveType::F32
+        | PrimitiveType::F64
+        | PrimitiveType::Bool
+        | PrimitiveType::Ptr => {
             return Ok(None);
         }
     }))

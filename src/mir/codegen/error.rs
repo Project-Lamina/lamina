@@ -35,6 +35,8 @@ pub enum FromIRError {
     UnsupportedGlobal(String),
     /// An aggregate crosses a function boundary in a form lowering cannot classify yet.
     UnsupportedAggregate(String),
+    /// A floating-point format no backend places yet, named so the reader knows which.
+    UnsupportedFloatFormat(String),
     /// A width conversion names a source and destination it cannot relate.
     InvalidConversion(String),
     /// A variadic argument form that lowering does not handle.
@@ -91,6 +93,13 @@ impl fmt::Display for FromIRError {
             }
             FromIRError::UnsupportedGlobal(reason) => {
                 write!(f, "global not yet supported: {reason}")
+            }
+            FromIRError::UnsupportedFloatFormat(what) => {
+                write!(
+                    f,
+                    "{what} is a type the IR names and no backend places yet; \
+                     convert through f32 until one does"
+                )
             }
             FromIRError::UnsupportedAggregate(reason) => {
                 write!(f, "aggregate not yet supported: {reason}")

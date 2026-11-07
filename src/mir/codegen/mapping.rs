@@ -35,6 +35,9 @@ pub fn map_ir_prim(p: IRPrim) -> Result<MirType, FromIRError> {
         IRPrim::F64 => ScalarType::F64,
         IRPrim::Bool => ScalarType::I1,
         IRPrim::Ptr => ScalarType::Ptr,
+        IRPrim::F16 | IRPrim::BF16 => {
+            return Err(FromIRError::UnsupportedFloatFormat(p.as_str().to_string()));
+        }
         IRPrim::I128 | IRPrim::U128 => return Err(FromIRError::UnsupportedType),
     };
     Ok(MirType::Scalar(scalar))
@@ -74,6 +77,12 @@ pub fn map_ir_vector(element_type: IRPrim, lanes: u32) -> Result<MirType, FromIR
         IRPrim::I64 | IRPrim::U64 => VectorLane::I64,
         IRPrim::F32 => VectorLane::F32,
         IRPrim::F64 => VectorLane::F64,
+        IRPrim::F16 | IRPrim::BF16 => {
+            return Err(FromIRError::UnsupportedFloatFormat(format!(
+                "<{lanes} x {}>",
+                element_type.as_str()
+            )));
+        }
         IRPrim::Bool | IRPrim::Ptr | IRPrim::I128 | IRPrim::U128 => {
             return Err(FromIRError::UnsupportedType);
         }
@@ -419,5 +428,29 @@ fn collect_leaves(
             "{what} has a vector field, which no aggregate classification covers"
         ))),
         _ => Err(FromIRError::UnsupportedType),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The IR names both formats so a front end can carry them, and lowering says which
+    /// one it cannot place rather than reporting an anonymous unsupported type.
+    #[test]
+    fn a_half_precision_scalar_is_refused_by_name() {
+        for (ty, name) in [(IRPrim::F16, "f16"), (IRPrim::BF16, "bf16")] {
+            let error = map_ir_prim(ty).expect_err("no backend places it yet");
+            let text = error.to_string();
+            assert!(text.contains(name), "{text}");
+            assert!(text.contains("convert through f32"), "{text}");
+        }
+    }
+
+    /// A vector of them is refused the same way, with the shape in the message.
+    #[test]
+    fn a_half_precision_vector_lane_is_refused_by_name() {
+        let error = map_ir_vector(IRPrim::BF16, 8).expect_err("no backend places it yet");
+        assert!(error.to_string().contains("<8 x bf16>"), "{error}");
     }
 }

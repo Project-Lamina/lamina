@@ -1467,6 +1467,11 @@ pub(super) fn lower_instruction<'a>(
                 | IRPrim::U128
                 | IRPrim::Bool
                 | IRPrim::Ptr => return Err(FromIRError::UnsupportedInstruction),
+                IRPrim::F16 | IRPrim::BF16 => {
+                    return Err(FromIRError::UnsupportedFloatFormat(
+                        target_type.as_str().to_string(),
+                    ));
+                }
             };
             let name = cx.libcall_name(symbol, vec![Abi::Wide], Some(Abi::Scalar(ret_ty)));
             let dst = resolve_or_alloc(result, cx.vregs, cx.vars);
@@ -1517,6 +1522,11 @@ pub(super) fn lower_instruction<'a>(
                 | IRPrim::U128
                 | IRPrim::Bool
                 | IRPrim::Ptr => return Err(FromIRError::UnsupportedInstruction),
+                IRPrim::F16 | IRPrim::BF16 => {
+                    return Err(FromIRError::UnsupportedFloatFormat(
+                        target_type.as_str().to_string(),
+                    ));
+                }
             };
             let arg = resolve_operand(value, cx.vregs, cx.vars, cx.globals)?;
             let name = cx.libcall_name(symbol, vec![Abi::Scalar(param_ty)], Some(Abi::Wide));

@@ -258,7 +258,7 @@ fn resolve_or_alloc<'a>(
 fn int_bits_for_bitcast(ty: &IRPrim) -> u32 {
     match ty {
         IRPrim::I8 | IRPrim::U8 | IRPrim::Bool => 8,
-        IRPrim::I16 | IRPrim::U16 => 16,
+        IRPrim::I16 | IRPrim::U16 | IRPrim::F16 | IRPrim::BF16 => 16,
         IRPrim::I32 | IRPrim::U32 | IRPrim::F32 => 32,
         IRPrim::I64 | IRPrim::U64 | IRPrim::F64 | IRPrim::Ptr => 64,
         IRPrim::I128 | IRPrim::U128 => 128,

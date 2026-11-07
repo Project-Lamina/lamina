@@ -616,6 +616,8 @@ fn parse_primitive_type_suffix(state: &mut ParserState<'_>) -> Result<PrimitiveT
         "u64" => Ok(PrimitiveType::U64),
         "i128" => Ok(PrimitiveType::I128),
         "u128" => Ok(PrimitiveType::U128),
+        "f16" => Ok(PrimitiveType::F16),
+        "bf16" => Ok(PrimitiveType::BF16),
         "f32" => Ok(PrimitiveType::F32),
         "f64" => Ok(PrimitiveType::F64),
         "bool" => Ok(PrimitiveType::Bool),
@@ -1816,7 +1818,11 @@ fn integer_bits(ty: PrimitiveType) -> Option<u32> {
         PrimitiveType::I32 | PrimitiveType::U32 => Some(32),
         PrimitiveType::I64 | PrimitiveType::U64 => Some(64),
         PrimitiveType::I128 | PrimitiveType::U128 => Some(128),
-        PrimitiveType::F32 | PrimitiveType::F64 | PrimitiveType::Ptr => None,
+        PrimitiveType::F16
+        | PrimitiveType::BF16
+        | PrimitiveType::F32
+        | PrimitiveType::F64
+        | PrimitiveType::Ptr => None,
     }
 }
 
@@ -1916,6 +1922,8 @@ fn parse_primitive_from_ident(
         "u64" => Ok(PrimitiveType::U64),
         "i128" => Ok(PrimitiveType::I128),
         "u128" => Ok(PrimitiveType::U128),
+        "f16" => Ok(PrimitiveType::F16),
+        "bf16" => Ok(PrimitiveType::BF16),
         "f32" => Ok(PrimitiveType::F32),
         "f64" => Ok(PrimitiveType::F64),
         "bool" => Ok(PrimitiveType::Bool),

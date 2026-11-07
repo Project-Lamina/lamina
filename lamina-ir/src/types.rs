@@ -196,6 +196,12 @@ pub enum PrimitiveType {
     /// 128-bit unsigned integer. Lowered to a pair of 64-bit words before any backend
     /// sees it.
     U128,
+    /// 16-bit floating point number (IEEE 754 half precision): 5 exponent bits and
+    /// 10 of significand. A target names it only where the hardware has it.
+    F16,
+    /// 16-bit brain floating point: 8 exponent bits and 7 of significand, so it has
+    /// the range of `f32` and less of its precision. Converting to `f32` is exact.
+    BF16,
     /// 32-bit floating point number (IEEE 754 single precision)
     F32,
     /// 64-bit floating point number (IEEE 754 double precision)
@@ -320,6 +326,7 @@ impl PrimitiveType {
             PrimitiveType::I32 | PrimitiveType::U32 => ValueClass::Integer(32),
             PrimitiveType::I64 | PrimitiveType::U64 => ValueClass::Integer(64),
             PrimitiveType::I128 | PrimitiveType::U128 => ValueClass::Integer(128),
+            PrimitiveType::F16 | PrimitiveType::BF16 => ValueClass::Float(16),
             PrimitiveType::F32 => ValueClass::Float(32),
             PrimitiveType::F64 => ValueClass::Float(64),
             PrimitiveType::Bool => ValueClass::Bool,
@@ -340,7 +347,12 @@ impl PrimitiveType {
             PrimitiveType::U64 => (0, u64::MAX.into()),
             PrimitiveType::I128 => (i128::MIN, i128::MAX),
             PrimitiveType::U128 => (0, i128::MAX),
-            PrimitiveType::F32 | PrimitiveType::F64 | PrimitiveType::Bool | PrimitiveType::Ptr => {
+            PrimitiveType::F16
+            | PrimitiveType::BF16
+            | PrimitiveType::F32
+            | PrimitiveType::F64
+            | PrimitiveType::Bool
+            | PrimitiveType::Ptr => {
                 return None;
             }
         })
@@ -362,6 +374,8 @@ impl PrimitiveType {
             name_for(PrimitiveType::U64),
             name_for(PrimitiveType::I128),
             name_for(PrimitiveType::U128),
+            name_for(PrimitiveType::F16),
+            name_for(PrimitiveType::BF16),
             name_for(PrimitiveType::F32),
             name_for(PrimitiveType::F64),
             name_for(PrimitiveType::Bool),
@@ -383,6 +397,8 @@ impl PrimitiveType {
             PrimitiveType::U64 => "u64",
             PrimitiveType::I128 => "i128",
             PrimitiveType::U128 => "u128",
+            PrimitiveType::F16 => "f16",
+            PrimitiveType::BF16 => "bf16",
             PrimitiveType::F32 => "f32",
             PrimitiveType::F64 => "f64",
             PrimitiveType::Bool => "bool",
@@ -472,7 +488,7 @@ impl fmt::Display for Value<'_> {
 pub const fn align_of_primitive(ty: PrimitiveType, pointer: PointerWidth) -> u64 {
     match ty {
         PrimitiveType::I8 | PrimitiveType::U8 | PrimitiveType::Bool => 1,
-        PrimitiveType::I16 | PrimitiveType::U16 => 2,
+        PrimitiveType::I16 | PrimitiveType::U16 | PrimitiveType::F16 | PrimitiveType::BF16 => 2,
         PrimitiveType::I32 | PrimitiveType::U32 | PrimitiveType::F32 => 4,
         PrimitiveType::I64 | PrimitiveType::U64 | PrimitiveType::F64 => 8,
         PrimitiveType::Ptr => pointer.bytes() as u64,
@@ -484,7 +500,7 @@ pub const fn align_of_primitive(ty: PrimitiveType, pointer: PointerWidth) -> u64
 pub const fn sizeof_primitive(ty: PrimitiveType, pointer: PointerWidth) -> u64 {
     match ty {
         PrimitiveType::I8 | PrimitiveType::U8 | PrimitiveType::Bool => 1,
-        PrimitiveType::I16 | PrimitiveType::U16 => 2,
+        PrimitiveType::I16 | PrimitiveType::U16 | PrimitiveType::F16 | PrimitiveType::BF16 => 2,
         PrimitiveType::I32 | PrimitiveType::U32 | PrimitiveType::F32 => 4,
         PrimitiveType::I64 | PrimitiveType::U64 | PrimitiveType::F64 => 8,
         PrimitiveType::Ptr => pointer.bytes() as u64,
@@ -497,7 +513,7 @@ pub const fn sizeof_primitive(ty: PrimitiveType, pointer: PointerWidth) -> u64 {
 pub const fn vector_lane_bits(element_type: PrimitiveType) -> Option<u32> {
     Some(match element_type {
         PrimitiveType::I8 | PrimitiveType::U8 => 8,
-        PrimitiveType::I16 | PrimitiveType::U16 => 16,
+        PrimitiveType::I16 | PrimitiveType::U16 | PrimitiveType::F16 | PrimitiveType::BF16 => 16,
         PrimitiveType::I32 | PrimitiveType::U32 | PrimitiveType::F32 => 32,
         PrimitiveType::I64 | PrimitiveType::U64 | PrimitiveType::F64 => 64,
         PrimitiveType::Bool | PrimitiveType::Ptr | PrimitiveType::I128 | PrimitiveType::U128 => {
@@ -1001,6 +1017,32 @@ mod tests {
                 assert_eq!(align_of_type(&ty, layout), 8, "{arch:?}");
             }
         }
+    }
+
+    /// Both hold 16 bits and align to 2, whatever the pointer width is, and both are a
+    /// lane a vector may hold.
+    #[test]
+    fn half_precision_types_are_two_bytes_everywhere() {
+        for ty in [PrimitiveType::F16, PrimitiveType::BF16] {
+            for layout in [l64(), l32()] {
+                assert_eq!(sizeof_primitive(ty, layout.pointer_width), 2, "{ty}");
+                assert_eq!(align_of_primitive(ty, layout.pointer_width), 2, "{ty}");
+            }
+            assert_eq!(vector_lane_bits(ty), Some(16), "{ty}");
+            assert_eq!(ty.value_class(), ValueClass::Float(16), "{ty}");
+            assert_eq!(ty.integer_bounds(), None, "{ty}");
+        }
+    }
+
+    /// The two differ only in how the 16 bits are split, which is why bf16 converts to
+    /// f32 exactly and f16 does not reach f32's range.
+    #[test]
+    fn half_precision_types_are_named_and_distinct() {
+        assert_eq!(PrimitiveType::F16.as_str(), "f16");
+        assert_eq!(PrimitiveType::BF16.as_str(), "bf16");
+        assert_ne!(PrimitiveType::F16, PrimitiveType::BF16);
+        assert!(PrimitiveType::all_names().contains(&"f16"));
+        assert!(PrimitiveType::all_names().contains(&"bf16"));
     }
 }
 
