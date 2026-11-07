@@ -1,5 +1,8 @@
 #![allow(clippy::expect_used)]
 
+#[path = "test_support_macho.rs"]
+pub mod macho;
+
 use std::{
     fs,
     path::{Path, PathBuf},
