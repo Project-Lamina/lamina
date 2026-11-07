@@ -14,6 +14,8 @@
 //!   actual CPU at runtime to determine what features are available. This is
 //!   more accurate but requires the code to run on the target CPU.
 
+use crate::arch_variant::Aarch64Level;
+use crate::cpu_level::X86CpuLevel;
 use crate::target::{Target, TargetArchitecture};
 
 #[cfg(target_arch = "aarch64")]
@@ -149,17 +151,26 @@ impl SimdCapabilities {
     /// # use lamina_platform::simd::SimdCapabilities;
     /// # #[cfg(feature = "nightly")]
     /// # {
+    /// # use lamina_platform::{ArchVariant, X86CpuLevel};
     /// let target = Target::new(TargetArchitecture::X86_64, TargetOperatingSystem::Linux);
     /// let caps = SimdCapabilities::detect(&target);
     /// assert!(caps.supported);
     /// assert!(caps.v128_supported);
-    /// assert!(caps.v256_supported);
+    /// // AVX needs v3; the default level is v2, which stops at SSE4.2.
+    /// assert!(!caps.v256_supported);
+    /// let avx2 = Target::new(TargetArchitecture::X86_64, TargetOperatingSystem::Linux)
+    ///     .with_variant(ArchVariant::X86(X86CpuLevel::V3));
+    /// assert!(SimdCapabilities::detect(&avx2).v256_supported);
     /// # }
     /// ```
     pub fn detect(target: &Target) -> Self {
         match target.architecture {
-            TargetArchitecture::X86_64 => Self::detect_x86_64(),
-            TargetArchitecture::Aarch64 => Self::detect_aarch64(),
+            TargetArchitecture::X86_64 => {
+                Self::detect_x86_64(target.variant.x86().unwrap_or_default())
+            }
+            TargetArchitecture::Aarch64 => {
+                Self::detect_aarch64(target.variant.aarch64().unwrap_or_default())
+            }
             TargetArchitecture::Arm32 | TargetArchitecture::Armv7 => Self::detect_arm32(),
             TargetArchitecture::Wasm32 | TargetArchitecture::Wasm64 => Self::detect_wasm(),
             TargetArchitecture::Riscv32 | TargetArchitecture::Riscv64 => Self::detect_riscv(),
@@ -183,65 +194,87 @@ impl SimdCapabilities {
         }
     }
 
-    /// Detect x86_64 SIMD capabilities.
+    /// What an x86-64 target of this microarchitecture level guarantees.
     ///
-    /// x86_64 baseline includes SSE2 (128-bit). Modern CPUs typically support
-    /// AVX (256-bit) and AVX2. AVX-512 (512-bit) is available on newer CPUs
-    /// but may be disabled by some vendors.
-    fn detect_x86_64() -> Self {
-        Self {
-            supported: true,
-            max_vector_width: 512, // AVX-512 capable, but may not be available
-            v128_supported: true,  // SSE2 is baseline for x86_64
-            v256_supported: true,  // AVX is common on modern x86_64
-            v512_supported: true,  // AVX-512 exists but may need runtime check
-            float_simd_supported: true,
-            integer_simd_supported: true,
-            fma_supported: true,  // FMA3 is common on modern x86_64
-            fp16_supported: true, // F16C and AVX-512-FP16
-            bf16_supported: true, // AVX-512-BF16
-            x86_extensions: vec![
-                X86SimdExtension::Sse2, // Baseline
+    /// The levels are the psABI ones: v1 is SSE2, v2 adds SSE3 through SSE4.2, v3 adds
+    /// AVX, AVX2, FMA and F16C, and v4 adds AVX-512F/BW/CD/DQ/VL. Nothing above the
+    /// level the target names is claimed, because code built for it has to run on a
+    /// part that only has that much. `detect_runtime` raises this for the machine it
+    /// is running on.
+    ///
+    /// Neither AVX-512-FP16 nor AVX-512-BF16 belongs to any level, so bf16 is false
+    /// here whatever the level is, and fp16 means F16C conversion from v3 on.
+    fn detect_x86_64(level: X86CpuLevel) -> Self {
+        let mut x86_extensions = vec![X86SimdExtension::Sse2];
+        if level >= X86CpuLevel::V2 {
+            x86_extensions.extend([
                 X86SimdExtension::Sse3,
                 X86SimdExtension::Ssse3,
                 X86SimdExtension::Sse41,
                 X86SimdExtension::Sse42,
-                X86SimdExtension::Avx,  // Common
-                X86SimdExtension::Avx2, // Common
-                X86SimdExtension::Fma3, // Common
-                X86SimdExtension::F16c, // Common
-                // AVX-512 extensions - may need runtime detection
+            ]);
+        }
+        if level >= X86CpuLevel::V3 {
+            x86_extensions.extend([
+                X86SimdExtension::Avx,
+                X86SimdExtension::Avx2,
+                X86SimdExtension::Fma3,
+                X86SimdExtension::F16c,
+            ]);
+        }
+        if level >= X86CpuLevel::V4 {
+            x86_extensions.extend([
                 X86SimdExtension::Avx512f,
                 X86SimdExtension::Avx512vl,
                 X86SimdExtension::Avx512bw,
                 X86SimdExtension::Avx512dq,
-            ],
+            ]);
+        }
+        let v256 = level >= X86CpuLevel::V3;
+        let v512 = level >= X86CpuLevel::V4;
+        Self {
+            supported: true,
+            max_vector_width: if v512 {
+                512
+            } else if v256 {
+                256
+            } else {
+                128
+            },
+            v128_supported: true,
+            v256_supported: v256,
+            v512_supported: v512,
+            float_simd_supported: true,
+            integer_simd_supported: true,
+            fma_supported: level >= X86CpuLevel::V3,
+            fp16_supported: level >= X86CpuLevel::V3,
+            bf16_supported: false,
+            x86_extensions,
             arm_extensions: Vec::new(),
             riscv_extensions: Vec::new(),
         }
     }
 
-    /// Detect AArch64 SIMD capabilities.
+    /// What an AArch64 target of this revision guarantees.
     ///
-    /// AArch64 baseline includes NEON (128-bit). SVE (Scalable Vector Extension)
-    /// provides variable-width vectors but is optional and requires runtime detection.
-    fn detect_aarch64() -> Self {
+    /// NEON is baseline and is 128 bits wide; SVE is optional and names its width only
+    /// at run time, so nothing wider is claimed here. Half-precision arithmetic is
+    /// FEAT_FP16, which arrives in v8.2. BF16 is FEAT_BF16, which arrives in v8.6 and
+    /// is past the highest revision this axis can name, so it is false throughout.
+    fn detect_aarch64(level: Aarch64Level) -> Self {
         Self {
             supported: true,
-            max_vector_width: 2048, // SVE can go up to 2048 bits, but 128 is baseline
-            v128_supported: true,   // NEON is baseline for AArch64
-            v256_supported: false,  // NEON doesn't support 256-bit, SVE would, but it's optional
-            v512_supported: false,  // SVE can support this but requires runtime detection
+            max_vector_width: 128,
+            v128_supported: true,
+            v256_supported: false,
+            v512_supported: false,
             float_simd_supported: true,
             integer_simd_supported: true,
-            fma_supported: true,   // NEON supports FMA
-            fp16_supported: true,  // NEON supports FP16
-            bf16_supported: false, // BF16 requires SVE2 or newer
+            fma_supported: true,
+            fp16_supported: level >= Aarch64Level::V8_2,
+            bf16_supported: false,
             x86_extensions: Vec::new(),
-            arm_extensions: vec![
-                ArmSimdExtension::Neon, // Baseline
-                                        // SVE and SVE2 are optional and would need runtime detection
-            ],
+            arm_extensions: vec![ArmSimdExtension::Neon],
             riscv_extensions: Vec::new(),
         }
     }
@@ -360,7 +393,9 @@ impl SimdCapabilities {
     /// # use lamina_platform::simd::SimdCapabilities;
     /// # #[cfg(feature = "nightly")]
     /// # {
-    /// let target = Target::new(TargetArchitecture::X86_64, TargetOperatingSystem::Linux);
+    /// # use lamina_platform::{ArchVariant, X86CpuLevel};
+    /// let target = Target::new(TargetArchitecture::X86_64, TargetOperatingSystem::Linux)
+    ///     .with_variant(ArchVariant::X86(X86CpuLevel::V4));
     /// let caps = SimdCapabilities::detect(&target);
     /// assert!(caps.supports_vector_width(128));
     /// assert!(caps.supports_vector_width(256));
@@ -693,42 +728,74 @@ impl Target {
 #[cfg(feature = "nightly")]
 mod tests {
     use super::*;
+    use crate::arch_variant::ArchVariant;
     use crate::target::{Target, TargetArchitecture, TargetOperatingSystem};
 
-    #[test]
-    fn test_simd_capabilities_x86_64() {
-        let target = Target::new(TargetArchitecture::X86_64, TargetOperatingSystem::Linux);
-        let caps = SimdCapabilities::detect(&target);
-        assert!(caps.supported);
-        assert!(caps.v128_supported);
-        assert!(caps.v256_supported);
-        assert!(caps.v512_supported);
-        assert!(caps.float_simd_supported);
-        assert!(caps.integer_simd_supported);
-        assert!(caps.fma_supported);
-        assert!(caps.fp16_supported);
-        assert!(caps.supports_vector_width(128));
-        assert!(caps.supports_vector_width(256));
-        assert!(caps.supports_vector_width(512));
-        assert!(caps.has_x86_extension(X86SimdExtension::Sse2));
-        assert!(caps.has_x86_extension(X86SimdExtension::Avx));
-        assert!(caps.has_x86_extension(X86SimdExtension::Avx2));
+    fn x86_at(level: X86CpuLevel) -> SimdCapabilities {
+        let target = Target::new(TargetArchitecture::X86_64, TargetOperatingSystem::Linux)
+            .with_variant(ArchVariant::X86(level));
+        SimdCapabilities::detect(&target)
     }
 
+    /// A target names the parts its code has to run on, so nothing above its level is
+    /// claimed. SSE2 is the only thing every x86-64 part has.
     #[test]
-    fn test_simd_capabilities_aarch64() {
-        let target = Target::new(TargetArchitecture::Aarch64, TargetOperatingSystem::MacOS);
-        let caps = SimdCapabilities::detect(&target);
-        assert!(caps.supported);
-        assert!(caps.v128_supported);
-        assert!(!caps.v256_supported); // NEON is 128-bit only
-        assert!(caps.float_simd_supported);
-        assert!(caps.integer_simd_supported);
-        assert!(caps.fma_supported);
-        assert!(caps.fp16_supported);
-        assert!(caps.supports_vector_width(128));
-        assert!(!caps.supports_vector_width(256));
-        assert!(caps.has_arm_extension(ArmSimdExtension::Neon));
+    fn x86_64_claims_no_more_than_its_level() {
+        for level in X86CpuLevel::ALL {
+            let caps = x86_at(level);
+            assert!(caps.supported, "{level:?}");
+            assert!(caps.v128_supported, "{level:?}");
+            assert!(caps.has_x86_extension(X86SimdExtension::Sse2), "{level:?}");
+            assert_eq!(caps.v256_supported, level >= X86CpuLevel::V3, "{level:?}");
+            assert_eq!(caps.v512_supported, level >= X86CpuLevel::V4, "{level:?}");
+            assert_eq!(caps.fma_supported, level >= X86CpuLevel::V3, "{level:?}");
+            assert_eq!(
+                caps.has_x86_extension(X86SimdExtension::Avx2),
+                level >= X86CpuLevel::V3,
+                "{level:?}"
+            );
+        }
+        assert!(x86_at(X86CpuLevel::V4).supports_vector_width(512));
+        assert!(!x86_at(X86CpuLevel::V2).supports_vector_width(256));
+    }
+
+    /// F16C arrives with v3 and converts; AVX-512-FP16 and AVX-512-BF16 belong to no
+    /// level at all, so a target alone never promises bf16.
+    #[test]
+    fn x86_64_half_precision_follows_the_level_and_bf16_never_does() {
+        for level in X86CpuLevel::ALL {
+            let caps = x86_at(level);
+            assert_eq!(caps.fp16_supported, level >= X86CpuLevel::V3, "{level:?}");
+            assert!(!caps.bf16_supported, "{level:?}");
+            assert_eq!(
+                caps.has_x86_extension(X86SimdExtension::F16c),
+                level >= X86CpuLevel::V3,
+                "{level:?}"
+            );
+        }
+    }
+
+    /// NEON is 128 bits and is baseline. Half-precision arithmetic is FEAT_FP16, which
+    /// arrives in v8.2; FEAT_BF16 is v8.6, past every revision this axis names.
+    #[test]
+    fn aarch64_claims_neon_and_half_precision_from_v8_2() {
+        for level in [Aarch64Level::V8_0, Aarch64Level::V8_1, Aarch64Level::V8_2] {
+            let target = Target::new(TargetArchitecture::Aarch64, TargetOperatingSystem::MacOS)
+                .with_variant(ArchVariant::Aarch64(level));
+            let caps = SimdCapabilities::detect(&target);
+            assert!(caps.supported, "{level:?}");
+            assert!(caps.v128_supported, "{level:?}");
+            assert!(!caps.v256_supported, "{level:?}");
+            assert!(caps.fma_supported, "{level:?}");
+            assert!(caps.has_arm_extension(ArmSimdExtension::Neon), "{level:?}");
+            assert!(!caps.supports_vector_width(256), "{level:?}");
+            assert_eq!(
+                caps.fp16_supported,
+                level >= Aarch64Level::V8_2,
+                "{level:?}"
+            );
+            assert!(!caps.bf16_supported, "{level:?}");
+        }
     }
 
     #[test]
