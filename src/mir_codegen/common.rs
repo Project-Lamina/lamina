@@ -1720,8 +1720,20 @@ mod tests {
 
 fn dying_input(inst: &Instruction) -> Option<(VirtualReg, VirtualReg)> {
     match inst {
+        // Every two-address form: the backend loads the left operand into the
+        // destination and operates in place, so sharing a register with it removes the
+        // move. Division and remainder go through `rax` instead and gain nothing.
         Instruction::IntBinary {
-            op: IntBinOp::Add,
+            op:
+                IntBinOp::Add
+                | IntBinOp::Sub
+                | IntBinOp::Mul
+                | IntBinOp::And
+                | IntBinOp::Or
+                | IntBinOp::Xor
+                | IntBinOp::Shl
+                | IntBinOp::LShr
+                | IntBinOp::AShr,
             dst: Register::Virtual(dst),
             lhs: Operand::Register(Register::Virtual(src)),
             ..
