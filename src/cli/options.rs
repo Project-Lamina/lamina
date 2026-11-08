@@ -107,6 +107,26 @@ fn selected_architecture(options: &CompileOptions) -> Option<TargetArchitecture>
     }
 }
 
+/// Values `--assembler` takes, in the order the usage text lists them.
+const ASSEMBLERS: &[&str] = &["ras", "gas", "as", "clang"];
+
+/// Values `-c` takes: a whole toolchain first, then the linkers that may be named alone.
+const COMPILERS: &[&str] = &[
+    "lamina", "gnu", "clang", "msvc", "ld", "lld", "mold", "weld", "link", "cl",
+];
+
+/// Check a flag's value against what it accepts, so a typo is refused where it is
+/// written rather than ignored and silently replaced by the default.
+fn accepted(flag: &str, value: &str, allowed: &[&str]) -> Result<(), CliError> {
+    if allowed.contains(&value) {
+        return Ok(());
+    }
+    Err(CliError::Diagnosis(format!(
+        "{flag}: unknown value '{value}' (expected {})",
+        allowed.join(", ")
+    )))
+}
+
 pub fn toolchain_backends(
     forced_compiler: &Option<String>,
     assembler_override: &Option<String>,
@@ -231,6 +251,7 @@ pub(crate) fn parse_args_from(args: Vec<String>) -> Result<CompileOptions, CliEr
                 if i + 1 >= args.len() {
                     return Err(CliError::usage("Missing argument for compiler"));
                 }
+                accepted("-c", &args[i + 1], COMPILERS)?;
                 options.forced_compiler = Some(args[i + 1].clone());
                 i += 2;
             }
@@ -238,6 +259,7 @@ pub(crate) fn parse_args_from(args: Vec<String>) -> Result<CompileOptions, CliEr
                 if i + 1 >= args.len() {
                     return Err(CliError::usage("Missing argument for --assembler"));
                 }
+                accepted("--assembler", &args[i + 1], ASSEMBLERS)?;
                 options.assembler = Some(args[i + 1].clone());
                 i += 2;
             }
@@ -532,6 +554,33 @@ mod tests {
             options.mir_codegen_settings.x86_cpu_level(),
             X86CpuLevel::V2
         );
+    }
+
+    /// A typo in a toolchain flag used to be ignored, which gave the user a different
+    /// toolchain from the one they asked for without saying so.
+    #[test]
+    fn an_unknown_toolchain_flag_value_is_refused_by_name() {
+        for (flag, value, expected) in [
+            ("--assembler", "bogus", "ras, gas, as, clang"),
+            ("-c", "bogus", "lamina, gnu, clang"),
+        ] {
+            let Err(error) = parse(&[flag, value]) else {
+                panic!("{flag} {value} was accepted");
+            };
+            assert!(error.contains("unknown value 'bogus'"), "{error}");
+            assert!(error.contains(expected), "{error}");
+        }
+    }
+
+    /// Every value the usage text offers is still taken.
+    #[test]
+    fn each_documented_toolchain_value_parses() {
+        for value in ASSEMBLERS {
+            parse(&["--assembler", value]).unwrap_or_else(|e| panic!("--assembler {value}: {e}"));
+        }
+        for value in COMPILERS {
+            parse(&["-c", value]).unwrap_or_else(|e| panic!("-c {value}: {e}"));
+        }
     }
 
     /// AVX-512-FP16 and AVX-512-BF16 are not levels, so `--cpu-level` takes them as
