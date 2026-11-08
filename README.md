@@ -179,11 +179,23 @@ entry:
 ### Installation
 
 ```bash
-cargo install lamina
+curl -fsSL https://lamina.sh/install.sh | sh
 ```
 
-That installs two binaries: `lamina` and `weld`, the linker lamina uses by default.
-`weld` doubles as a standalone `ld` replacement.
+That installs `lamina`, `ras` and `weld`, then prints the version of each one it can
+find and says so if something else on `PATH` shadows them. `--with-ldb` adds the
+debugger, `--version` pins the compiler, and `--dry-run` prints the commands and what
+is already installed without changing anything.
+
+To do it by hand, install all three rather than only the compiler:
+
+```bash
+cargo install lamina lamina-ras lamina-weld
+```
+
+`cargo install lamina` alone gives two binaries, `lamina` and `weld`. It leaves
+whatever `ras` is already on `PATH`, and an older one makes the compiler fall back to
+GNU as and ld without being asked. `weld` doubles as a standalone `ld` replacement.
 
 `lamina` looks for `weld` beside itself first and only then on `PATH`. Set `LAMINA_WELD`
 to a path to link with a different one. A weld older than 0.2.3 is refused with a
