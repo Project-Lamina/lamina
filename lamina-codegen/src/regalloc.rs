@@ -1,4 +1,7 @@
-use lamina_mir::{Function, Instruction, Register, VirtualReg, verify::calculate_dominators};
+use lamina_mir::{
+    Function, Instruction, IntBinOp, Located, Operand, Register, VirtualReg,
+    verify::calculate_dominators,
+};
 use std::{
     cmp::Reverse,
     collections::{BTreeMap, HashMap, HashSet},
@@ -130,6 +133,165 @@ pub struct LiveInterval {
     pub end: usize,
     /// Estimated execution frequency summed over uses and definitions.
     pub weight: u64,
+    /// The parts of the hull the value is really live in, in half positions: a read at
+    /// instruction `p` is `2p` and a write is `2p + 1`, so a value written at `p` does
+    /// not meet one read at `p` for the last time. Sorted, disjoint, inclusive, and
+    /// never empty. Two values may share a register exactly when no pair of their
+    /// ranges meets, which a hull alone cannot tell: a value spanning a loop it is not
+    /// used in reserves a register the whole way under the hull and none of it here.
+    pub ranges: Vec<(usize, usize)>,
+    /// Values this one is copied from or to, including the left operand of a
+    /// two-address operation. Giving a pair one register deletes the move between them.
+    pub affinities: Vec<VirtualReg>,
+}
+
+impl LiveInterval {
+    /// An interval live across the whole of `[start, end]`, with no affinities. The
+    /// allocators treat it exactly as they did before ranges existed.
+    pub fn hull(vreg: VirtualReg, start: usize, end: usize, weight: u64) -> Self {
+        Self {
+            vreg,
+            start,
+            end,
+            weight,
+            ranges: vec![(2 * start, 2 * end + 1)],
+            affinities: Vec::new(),
+        }
+    }
+
+    /// Whether `self` and `other` are live at any common point.
+    pub fn conflicts(&self, other: &Self) -> bool {
+        let (mut i, mut j) = (0, 0);
+        while let (Some(&(a0, a1)), Some(&(b0, b1))) = (self.ranges.get(i), other.ranges.get(j)) {
+            if a0 <= b1 && b0 <= a1 {
+                return true;
+            }
+            if a1 < b1 { i += 1 } else { j += 1 }
+        }
+        false
+    }
+}
+
+/// The virtual registers an instruction reads, including the slot a `StackAddr` names.
+fn used_vregs(instr: &Located) -> Vec<VirtualReg> {
+    let mut used: Vec<VirtualReg> = instr
+        .use_regs()
+        .into_iter()
+        .filter_map(|reg| match reg {
+            Register::Virtual(vreg) => Some(*vreg),
+            Register::Physical(_) => None,
+        })
+        .collect();
+    if let Instruction::StackAddr { slot, .. } = &instr.instr {
+        used.push(*slot);
+    }
+    used
+}
+
+/// The live ranges of every value, in the half positions [`LiveInterval::ranges`] uses.
+///
+/// Walking a block backwards from what leaves it alive closes a range at each write and
+/// opens one at each read, so a value untouched between two uses contributes nothing in
+/// between and its register is free there.
+fn live_ranges(
+    function: &Function,
+    live_out: &[HashSet<VirtualReg>],
+) -> HashMap<VirtualReg, Vec<(usize, usize)>> {
+    let mut block_start = Vec::with_capacity(function.blocks.len());
+    let mut pos = 0;
+    for block in &function.blocks {
+        block_start.push(pos);
+        pos += block.instructions.len();
+    }
+
+    let mut ranges: HashMap<VirtualReg, Vec<(usize, usize)>> = HashMap::new();
+    for (index, block) in function.blocks.iter().enumerate() {
+        if block.instructions.is_empty() {
+            continue;
+        }
+        let first = block_start[index];
+        let last = first + block.instructions.len() - 1;
+        // A value that leaves the block stays live past its final instruction.
+        let mut open: HashMap<VirtualReg, usize> = live_out[index]
+            .iter()
+            .map(|&vreg| (vreg, 2 * last + 1))
+            .collect();
+        for (offset, instr) in block.instructions.iter().enumerate().rev() {
+            let at = first + offset;
+            if let Some(Register::Virtual(dst)) = instr.def_reg() {
+                // The write ends the value's life backwards. A write nothing reads still
+                // owns its register for the instruction.
+                let end = open.remove(dst).unwrap_or(2 * at + 1);
+                ranges.entry(*dst).or_default().push((2 * at + 1, end));
+            }
+            for vreg in used_vregs(instr) {
+                open.entry(vreg).or_insert(2 * at);
+            }
+        }
+        // Whatever is still open was live when the block began.
+        for (vreg, end) in open {
+            ranges.entry(vreg).or_default().push((2 * first, end));
+        }
+    }
+    for (_, spans) in ranges.iter_mut() {
+        spans.sort_unstable();
+        let mut merged: Vec<(usize, usize)> = Vec::with_capacity(spans.len());
+        for &(start, end) in spans.iter() {
+            match merged.last_mut() {
+                Some(previous) if start <= previous.1 + 1 => previous.1 = previous.1.max(end),
+                _ => merged.push((start, end)),
+            }
+        }
+        *spans = merged;
+    }
+    ranges
+}
+
+/// Pairs that lose a move when they share a register: both ends of a copy, and the
+/// destination and left operand of an operation the backend performs in place.
+fn affinities(function: &Function) -> HashMap<VirtualReg, Vec<VirtualReg>> {
+    let mut pairs: HashMap<VirtualReg, Vec<VirtualReg>> = HashMap::new();
+    let mut note = |a: VirtualReg, b: VirtualReg| {
+        if a != b {
+            pairs.entry(a).or_default().push(b);
+            pairs.entry(b).or_default().push(a);
+        }
+    };
+    for instr in function.blocks.iter().flat_map(|block| &block.instructions) {
+        match &instr.instr {
+            Instruction::Copy {
+                dst: Register::Virtual(dst),
+                src: Operand::Register(Register::Virtual(src)),
+                ..
+            } => note(*dst, *src),
+            Instruction::IntBinary {
+                op,
+                dst: Register::Virtual(dst),
+                lhs: Operand::Register(Register::Virtual(src)),
+                ..
+            } if matches!(
+                op,
+                IntBinOp::Add
+                    | IntBinOp::Sub
+                    | IntBinOp::Mul
+                    | IntBinOp::And
+                    | IntBinOp::Or
+                    | IntBinOp::Xor
+                    | IntBinOp::Shl
+                    | IntBinOp::LShr
+                    | IntBinOp::AShr
+            ) =>
+            {
+                note(*dst, *src)
+            }
+            _ => {}
+        }
+    }
+    for list in pairs.values_mut() {
+        list.sort_unstable();
+        list.dedup();
+    }
+    pairs
 }
 
 fn loop_depths(function: &Function) -> Vec<u32> {
@@ -203,12 +365,9 @@ impl LinearScanAllocator {
         let depths = loop_depths(function);
         let mut pos = 0;
         let record = |intervals: &mut HashMap<VirtualReg, LiveInterval>, vreg, pos, weight| {
-            let interval = intervals.entry(vreg).or_insert(LiveInterval {
-                vreg,
-                start: pos,
-                end: pos,
-                weight: 0,
-            });
+            let interval = intervals
+                .entry(vreg)
+                .or_insert_with(|| LiveInterval::hull(vreg, pos, pos, 0));
             interval.start = interval.start.min(pos);
             interval.end = interval.end.max(pos);
             interval.weight += weight;
@@ -289,7 +448,19 @@ impl LinearScanAllocator {
                 record(&mut intervals, *vreg, end, 0);
             }
         }
+        let ranges = live_ranges(function, &live_out);
+        let affinities = affinities(function);
         let mut result: Vec<_> = intervals.into_values().collect();
+        for interval in &mut result {
+            if let Some(spans) = ranges.get(&interval.vreg)
+                && !spans.is_empty()
+            {
+                interval.ranges = spans.clone();
+            }
+            if let Some(partners) = affinities.get(&interval.vreg) {
+                interval.affinities = partners.clone();
+            }
+        }
         result.sort_by_key(|interval| (interval.start, interval.vreg));
         result
     }
@@ -316,62 +487,90 @@ impl LinearScanAllocator {
         allowed: impl Fn(&LiveInterval, R) -> bool,
     ) -> HashMap<VirtualReg, Allocation<R>> {
         let mut result: HashMap<VirtualReg, Allocation<R>> = HashMap::new();
-        // Active intervals: sorted by end point (ascending).
-        let mut active: Vec<(&LiveInterval, R)> = Vec::new();
-        let mut free: Vec<R> = available_regs.to_vec();
         let mut next_spill: i32 = -8; // first spill at [rbp - 8]
+        let slot_of: HashMap<VirtualReg, usize> = intervals
+            .iter()
+            .enumerate()
+            .map(|(index, interval)| (interval.vreg, index))
+            .collect();
+        // Which intervals currently sit in each register. A register holds more than one
+        // at a time whenever their ranges miss each other.
+        let mut holders: Vec<Vec<usize>> = vec![Vec::new(); available_regs.len()];
 
-        for interval in intervals {
-            // Expire intervals that ended before this one started.
-            let current_start = interval.start;
-            let mut freed: Vec<R> = Vec::new();
-            active.retain(|(ai, reg)| {
-                if ai.end < current_start {
-                    freed.push(*reg);
-                    false
-                } else {
-                    true
+        for (index, interval) in intervals.iter().enumerate() {
+            for list in holders.iter_mut() {
+                list.retain(|&held| intervals[held].end >= interval.start);
+            }
+            let fits = |slot: usize, holders: &[Vec<usize>]| {
+                allowed(interval, available_regs[slot])
+                    && holders[slot]
+                        .iter()
+                        .all(|&held| !intervals[held].conflicts(interval))
+            };
+
+            // A register already holding a value this one is copied from or to saves a
+            // move, so it is worth more than any other free register.
+            let mut chosen = interval
+                .affinities
+                .iter()
+                .filter_map(|partner| slot_of.get(partner))
+                .filter_map(|&other| match result.get(&intervals[other].vreg) {
+                    Some(Allocation::Register(reg)) => {
+                        available_regs.iter().position(|free| free == reg)
+                    }
+                    _ => None,
+                })
+                .find(|&slot| fits(slot, &holders));
+            // Otherwise the far end of the pool, which the backends order so that the
+            // registers needing no save come first.
+            if chosen.is_none() {
+                chosen = (0..available_regs.len())
+                    .rev()
+                    .find(|&slot| fits(slot, &holders));
+            }
+
+            if let Some(slot) = chosen {
+                result.insert(interval.vreg, Allocation::Register(available_regs[slot]));
+                holders[slot].push(index);
+                continue;
+            }
+
+            // Nothing is free. Take the register whose one blocking value is the
+            // cheapest, when it is cheaper than this one.
+            let victim = (0..available_regs.len())
+                .filter(|&slot| allowed(interval, available_regs[slot]))
+                .filter_map(|slot| {
+                    let mut blocking = holders[slot]
+                        .iter()
+                        .copied()
+                        .filter(|&held| intervals[held].conflicts(interval));
+                    match (blocking.next(), blocking.next()) {
+                        (Some(only), None) => Some((slot, only)),
+                        _ => None,
+                    }
+                })
+                .min_by_key(|&(_, held)| {
+                    (
+                        intervals[held].weight,
+                        Reverse(intervals[held].end),
+                        intervals[held].vreg,
+                    )
+                });
+            match victim {
+                Some((slot, held))
+                    if intervals[held].weight < interval.weight
+                        || (intervals[held].weight == interval.weight
+                            && intervals[held].end > interval.end) =>
+                {
+                    result.insert(intervals[held].vreg, Allocation::Spill(next_spill));
+                    next_spill -= 8;
+                    holders[slot].retain(|&other| other != held);
+                    result.insert(interval.vreg, Allocation::Register(available_regs[slot]));
+                    holders[slot].push(index);
                 }
-            });
-            free.extend(freed);
-
-            if let Some(index) = free.iter().rposition(|reg| allowed(interval, *reg)) {
-                let reg = free.remove(index);
-                // Assign a free register.
-                result.insert(interval.vreg, Allocation::Register(reg));
-                // Insert into active, keeping it sorted by end point.
-                let pos = active
-                    .binary_search_by_key(&interval.end, |(ai, _)| ai.end)
-                    .unwrap_or_else(|i| i);
-                active.insert(pos, (interval, reg));
-            } else {
-                let candidate = active
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, (_, reg))| allowed(interval, *reg))
-                    .min_by_key(|(_, (ai, _))| (ai.weight, Reverse(ai.end), ai.vreg))
-                    .map(|(index, _)| index);
-                match candidate.map(|index| (index, active[index])) {
-                    Some((index, (spill_interval, spill_reg)))
-                        if spill_interval.weight < interval.weight
-                            || (spill_interval.weight == interval.weight
-                                && spill_interval.end > interval.end) =>
-                    {
-                        // Spill the existing active interval; give its register to `interval`.
-                        result.insert(spill_interval.vreg, Allocation::Spill(next_spill));
-                        next_spill -= 8;
-                        active.remove(index);
-                        result.insert(interval.vreg, Allocation::Register(spill_reg));
-                        let pos = active
-                            .binary_search_by_key(&interval.end, |(ai, _)| ai.end)
-                            .unwrap_or_else(|i| i);
-                        active.insert(pos, (interval, spill_reg));
-                    }
-                    _ => {
-                        // Spill the current interval.
-                        result.insert(interval.vreg, Allocation::Spill(next_spill));
-                        next_spill -= 8;
-                    }
+                _ => {
+                    result.insert(interval.vreg, Allocation::Spill(next_spill));
+                    next_spill -= 8;
                 }
             }
         }
@@ -383,7 +582,7 @@ impl LinearScanAllocator {
 /// Interference check for live intervals: overlap on the global instruction index line.
 #[inline]
 pub fn intervals_interfere(a: &LiveInterval, b: &LiveInterval) -> bool {
-    a.start <= b.end && b.start <= a.end
+    a.conflicts(b)
 }
 
 /// Greedy graph-coloring register allocator (interference graph from live intervals).
@@ -432,6 +631,11 @@ impl GraphColorAllocator {
                 overlapping_starts - ended_before - 1
             })
             .collect();
+        let slot_of: HashMap<VirtualReg, usize> = intervals
+            .iter()
+            .enumerate()
+            .map(|(index, interval)| (interval.vreg, index))
+            .collect();
         let mut order: Vec<usize> = (0..intervals.len()).collect();
         order.sort_by(|&i, &j| {
             intervals[j]
@@ -448,29 +652,42 @@ impl GraphColorAllocator {
 
         for idx in order {
             let interval = &intervals[idx];
+            // Disjoint spans in ascending order: only the last one starting at or before
+            // the end of a range can reach back into it.
             let overlaps = |spans: &BTreeMap<usize, usize>| {
-                spans
-                    .range(..=interval.end)
-                    .next_back()
-                    .is_some_and(|(_, &end)| end >= interval.start)
+                interval.ranges.iter().any(|&(start, end)| {
+                    spans
+                        .range(..=end)
+                        .next_back()
+                        .is_some_and(|(_, &taken)| taken >= start)
+                })
+            };
+            let free = |reg: &R, occupied: &HashMap<R, BTreeMap<usize, usize>>| {
+                !occupied.get(reg).is_some_and(overlaps) && allowed(interval, *reg)
             };
 
-            let mut picked: Option<R> = None;
-            for reg in available_regs {
-                let blocked = occupied.get(reg).is_some_and(overlaps);
-                if !blocked && allowed(interval, *reg) {
-                    picked = Some(*reg);
-                    break;
-                }
+            // A register already holding something this value is copied from or to
+            // costs one move less than any other, so try those first.
+            let mut picked: Option<R> = interval
+                .affinities
+                .iter()
+                .filter_map(|partner| slot_of.get(partner))
+                .filter(|&&other| !intervals[other].conflicts(interval))
+                .find_map(|&other| match result.get(&intervals[other].vreg) {
+                    Some(Allocation::Register(reg)) if free(reg, &occupied) => Some(*reg),
+                    _ => None,
+                });
+            if picked.is_none() {
+                picked = available_regs.iter().find(|reg| free(reg, &occupied)).copied();
             }
 
             match picked {
                 Some(r) => {
                     result.insert(interval.vreg, Allocation::Register(r));
-                    occupied
-                        .entry(r)
-                        .or_default()
-                        .insert(interval.start, interval.end);
+                    let spans = occupied.entry(r).or_default();
+                    for &(start, end) in &interval.ranges {
+                        spans.insert(start, end);
+                    }
                 }
                 None => {
                     result.insert(interval.vreg, Allocation::Spill(next_spill));
@@ -583,30 +800,10 @@ mod tests {
     #[test]
     fn weighted_spills_preserve_hot_values_and_constraints() {
         let mut intervals = vec![
-            LiveInterval {
-                vreg: VirtualReg::gpr(0),
-                start: 0,
-                end: 100,
-                weight: 1000,
-            },
-            LiveInterval {
-                vreg: VirtualReg::gpr(1),
-                start: 1,
-                end: 80,
-                weight: 10,
-            },
-            LiveInterval {
-                vreg: VirtualReg::gpr(2),
-                start: 2,
-                end: 90,
-                weight: 100,
-            },
-            LiveInterval {
-                vreg: VirtualReg::gpr(3),
-                start: 3,
-                end: 4,
-                weight: 1,
-            },
+            LiveInterval::hull(VirtualReg::gpr(0), 0, 100, 1000),
+            LiveInterval::hull(VirtualReg::gpr(1), 1, 80, 10),
+            LiveInterval::hull(VirtualReg::gpr(2), 2, 90, 100),
+            LiveInterval::hull(VirtualReg::gpr(3), 3, 4, 1),
         ];
         for allocate in [LinearScanAllocator::allocate, GraphColorAllocator::allocate] {
             let plan = allocate(&intervals, &["a", "b"]);
@@ -688,30 +885,10 @@ mod tests {
     #[test]
     fn constrained_allocators_respect_fixed_registers_and_eviction() {
         let intervals = [
-            LiveInterval {
-                vreg: VirtualReg::gpr(0),
-                start: 0,
-                end: 10,
-                weight: 1,
-            },
-            LiveInterval {
-                vreg: VirtualReg::gpr(1),
-                start: 1,
-                end: 9,
-                weight: 1,
-            },
-            LiveInterval {
-                vreg: VirtualReg::gpr(2),
-                start: 2,
-                end: 3,
-                weight: 1,
-            },
-            LiveInterval {
-                vreg: VirtualReg::gpr(3),
-                start: 3,
-                end: 4,
-                weight: 1,
-            },
+            LiveInterval::hull(VirtualReg::gpr(0), 0, 10, 1),
+            LiveInterval::hull(VirtualReg::gpr(1), 1, 9, 1),
+            LiveInterval::hull(VirtualReg::gpr(2), 2, 3, 1),
+            LiveInterval::hull(VirtualReg::gpr(3), 3, 4, 1),
         ];
         let allowed = |interval: &LiveInterval, reg| match interval.vreg.id {
             0 | 2 => reg == "callee",
@@ -898,20 +1075,32 @@ mod tests {
         let mut func = FunctionBuilder::new("spill_test").returns(i64_ty).build();
         let mut block = Block::new("entry");
 
-        // 8 vregs all live simultaneously: v0+v1 → v2, v3+v4 → v5, v6+v7 → v8
+        // Eight values defined up front and all read at the end, so all eight are live
+        // at once. A chain of adds would not be: each link dies at the next one.
         for i in 0u32..8 {
-            let vi = Register::Virtual(VirtualReg::gpr(i));
-            let vj = Register::Virtual(VirtualReg::gpr(i + 1));
-            let vd = Register::Virtual(VirtualReg::gpr(i + 2));
             block.push(Instruction::IntBinary {
                 op: IntBinOp::Add,
                 ty: i64_ty,
-                dst: vd,
-                lhs: Operand::Register(vi),
-                rhs: Operand::Register(vj),
+                dst: Register::Virtual(VirtualReg::gpr(i)),
+                lhs: Operand::Immediate(Immediate::I64(i as i64)),
+                rhs: Operand::Immediate(Immediate::I64(1)),
             });
         }
-        block.push(Instruction::Ret { value: None });
+        let mut total = Register::Virtual(VirtualReg::gpr(0));
+        for i in 1u32..8 {
+            let dst = Register::Virtual(VirtualReg::gpr(100 + i));
+            block.push(Instruction::IntBinary {
+                op: IntBinOp::Add,
+                ty: i64_ty,
+                dst: dst.clone(),
+                lhs: Operand::Register(total),
+                rhs: Operand::Register(Register::Virtual(VirtualReg::gpr(i))),
+            });
+            total = dst;
+        }
+        block.push(Instruction::Ret {
+            value: Some(Operand::Register(total)),
+        });
         func.add_block(block);
 
         let intervals = LinearScanAllocator::compute_intervals(&func);
@@ -949,22 +1138,35 @@ mod tests {
 
     #[test]
     fn graph_color_spills_when_register_count_exhausted() {
+        // Eight values defined up front and all read at the end, so every one of them
+        // is live at the same time and two registers cannot hold them.
         let i64_ty = MirType::Scalar(ScalarType::I64);
         let mut func = FunctionBuilder::new("spill_gc").returns(i64_ty).build();
         let mut block = Block::new("entry");
         for i in 0u32..8 {
-            let vi = Register::Virtual(VirtualReg::gpr(i));
-            let vj = Register::Virtual(VirtualReg::gpr(i + 1));
-            let vd = Register::Virtual(VirtualReg::gpr(i + 2));
             block.push(Instruction::IntBinary {
                 op: IntBinOp::Add,
                 ty: i64_ty,
-                dst: vd,
-                lhs: Operand::Register(vi),
-                rhs: Operand::Register(vj),
+                dst: Register::Virtual(VirtualReg::gpr(i)),
+                lhs: Operand::Immediate(Immediate::I64(i as i64)),
+                rhs: Operand::Immediate(Immediate::I64(1)),
             });
         }
-        block.push(Instruction::Ret { value: None });
+        let mut total = Register::Virtual(VirtualReg::gpr(0));
+        for i in 1u32..8 {
+            let dst = Register::Virtual(VirtualReg::gpr(100 + i));
+            block.push(Instruction::IntBinary {
+                op: IntBinOp::Add,
+                ty: i64_ty,
+                dst: dst.clone(),
+                lhs: Operand::Register(total),
+                rhs: Operand::Register(Register::Virtual(VirtualReg::gpr(i))),
+            });
+            total = dst;
+        }
+        block.push(Instruction::Ret {
+            value: Some(Operand::Register(total)),
+        });
         func.add_block(block);
 
         let intervals = LinearScanAllocator::compute_intervals(&func);
