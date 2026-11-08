@@ -567,6 +567,75 @@ mod tests {
     use super::*;
     use crate::{mir::codegen, parser};
 
+    /// Emission must not depend on the iteration order of a hash container, which Rust
+    /// seeds differently per process. Two runs in one process cannot see that, so the
+    /// module is lowered and emitted twice from sources whose only difference is the
+    /// order the declarations arrive in; a container keyed by name would reorder the
+    /// output, an ordered one would not.
+    #[test]
+    fn emission_does_not_depend_on_declaration_order() {
+        const FIRST: &str = r#"
+global $alpha: i64 = 1
+global $beta: i64 = 2
+global $gamma: i64 = 3
+
+@extern
+fn @outside(i64 %n) -> i64
+
+fn @one(i64 %a) -> i64 {
+  entry:
+    %r = add.i64 %a, 1
+    ret.i64 %r
+}
+
+fn @two(i64 %a) -> i64 {
+  entry:
+    %r = mul.i64 %a, 2
+    ret.i64 %r
+}
+
+@export
+fn @main() -> i64 {
+  entry:
+    %a = load.i64 $alpha
+    %b = call @one(%a)
+    %c = call @two(%b)
+    %d = call @outside(%c)
+    ret.i64 %d
+}
+"#;
+        // The same module with its globals and functions written in another order.
+        let second = {
+            let mut blocks: Vec<&str> = FIRST.trim().split("\n\n").collect();
+            blocks.swap(0, 1);
+            let last = blocks.len() - 1;
+            blocks.swap(1, last - 1);
+            blocks.join("\n\n")
+        };
+
+        for target in [
+            "x86_64_linux",
+            "aarch64_linux",
+            "riscv64_linux",
+            "s390x_linux",
+        ] {
+            let target: Target = target.parse().expect("target parses");
+            let emit = |source: &str| {
+                let ir = parser::parse_module(source).expect("module parses");
+                let mir =
+                    codegen::from_ir_for_target(&ir, "det", target.data_layout()).expect("lowers");
+                let mut out = Vec::new();
+                generate_mir_to_target(&mir, &mut out, &target, 1).expect("emits");
+                String::from_utf8(out).expect("utf8")
+            };
+            assert_eq!(
+                emit(FIRST),
+                emit(&second),
+                "{target} emits a different listing when the declarations are reordered"
+            );
+        }
+    }
+
     fn create_simple_add_function() -> Module {
         let input = r#"
         fn @add(i64 %a, i64 %b) -> i64 {
