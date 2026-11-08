@@ -8,6 +8,7 @@ mod addressing;
 mod alias;
 #[cfg(test)]
 mod alias_tests;
+mod block_layout;
 mod branch_opt;
 mod cfg;
 mod constant_folding;
@@ -52,6 +53,7 @@ pub use memory::MemoryOptimization;
 pub use peephole::Peephole;
 pub use reduction_exit::ReductionExit;
 pub use scheduling::InstructionScheduling;
+pub use block_layout::BlockLayout;
 pub use sroa::ScalarReplacement;
 pub use strength_reduction::StrengthReduction;
 pub use tail_call::TailCallOptimization;
@@ -583,6 +585,11 @@ impl TransformPipeline {
             module
                 .validate_in_pipeline()
                 .map_err(|errors| TransformError::VerificationFailed { errors })?;
+        }
+        // Last: every pass above may add or remove blocks, and the order it leaves them
+        // in decides which values share an interval.
+        for func in module.functions.values_mut() {
+            BlockLayout.apply(func)?;
         }
         // After rotation: it copies the loop test, constants included, into the back edge.
         if self.hoist_constants {
