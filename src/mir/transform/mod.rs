@@ -470,7 +470,9 @@ impl TransformPipeline {
             )
         {
             pipeline.canonicalize_addresses = true;
-            pipeline.hoist_constants = true;
+            // On x86_64 hoisting only pays once the loops it feeds are rotated.
+            pipeline.hoist_constants =
+                target == TargetArchitecture::Aarch64 || opt_level >= 3;
         }
         pipeline
     }
