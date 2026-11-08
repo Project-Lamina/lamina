@@ -1545,7 +1545,10 @@ fn tail_calls_restore_callee_saved_registers_first() -> Result<(), Box<dyn Error
         for reg in &planned {
             let last = mentions(reg).ok_or("register vanished")?;
             assert!(
-                (last.contains("ldp ") || last.contains("ldr ")) && last.contains("[x29"),
+                // An odd number of saved registers leaves the last one on its own,
+                // which `ldur` restores rather than `ldp`.
+                (last.contains("ldp ") || last.contains("ldr ") || last.contains("ldur "))
+                    && last.contains("[x29"),
                 "{reg} is not restored ahead of the tail call: {asm}"
             );
         }
