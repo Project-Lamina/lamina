@@ -205,25 +205,47 @@ found, lamina also falls back to GNU ld with a `[WARN]`.
 
 ### Available Targets
 
+A target is **done** when its output is run and checked against an expected result on a machine of that architecture. It is **in progress** when it compiles and its output is read or assembled but not run.
+
+The counts below come from `run_tests.py --target <name>`. It builds the testcase suite, runs it (under QEMU when the host is a different architecture) and compares the output with the expected files.
+
 **x86_64 (Intel/AMD 64-bit)**
-- `x86_64_linux`: Linux x86_64
-- `x86_64_macos`: macOS x86_64 (Intel Macs)
-- `x86_64_windows`: Windows x86_64
-- `x86_64_unknown`: Generic x86_64 (ELF conventions)
+- `x86_64_linux`: Linux x86_64. Done. 194 of 194 testcases pass.
+- `x86_64_macos`: macOS x86_64 (Intel Macs). In progress.
+- `x86_64_windows`: Windows x86_64. Done. 194 of 194 testcases pass under wine.
+- `x86_64_unknown`: Generic x86_64 (ELF conventions). In progress.
 
 **AArch64 (ARM 64-bit)**
-- `aarch64_macos`: macOS ARM64 (Apple Silicon)
-- `aarch64_linux`: Linux ARM64
-- `aarch64_windows`: Windows ARM64
-- `aarch64_unknown`: Generic AArch64 (ELF conventions)
+- `aarch64_macos`: macOS ARM64 (Apple Silicon). In progress.
+- `aarch64_linux`: Linux ARM64. Done. 194 of 194 testcases pass.
+- `aarch64_windows`: Windows ARM64. In progress.
+- `aarch64_unknown`: Generic AArch64 (ELF conventions). In progress.
 
 **RISC-V**
-- `riscv32_unknown`: RISC-V 32-bit
-- `riscv64_linux`: RISC-V 64-bit Linux (`riscv64_unknown` and `riscv64gc_linux` are accepted aliases)
+- `riscv32_unknown`: RISC-V 32-bit. In progress.
+- `riscv64_linux`: RISC-V 64-bit Linux (`riscv64_unknown` and `riscv64gc_linux` are accepted aliases). Done. 185 of 185 testcases pass, and 9 are skipped as unsupported on the target.
+
+**32-bit x86**
+- `i686_linux`: Linux i686 (`x86_linux` and `i386_linux` are accepted spellings). Done. 167 of 167 testcases pass natively.
+
+**Armv7 (ARM 32-bit)**
+- `armv7_linux`: Linux armv7. Done. 168 of 168 testcases pass. The variants `armv7a`, `armv7a-neon`, `armv7hf` and `armv7m` select the same backend. The soft-float ones, `armv7a-sf` and `armv7r`, parse and then refuse: `armv7 code generation needs a VFP unit`.
+
+**s390x (IBM Z)**
+- `s390x_linux`: Linux s390x, big-endian (`systemz_linux` is an accepted spelling). Done. 192 of 192 testcases pass.
+
+**PowerPC64**
+- `ppc64le_linux`: Linux ppc64le ELFv2 (`powerpc64_linux` and the `ppc64le-power9` and `ppc64le-power10` variants are accepted). In progress. `ras` assembles it, but `weld` cannot link PowerPC64 yet, so nothing has been linked or run.
+
+**Others that compile but are not run**
+- `loong64_linux`: Linux LoongArch64. In progress.
+- `mips64le_linux`: Linux MIPS64 little-endian. In progress.
 
 **WebAssembly**
-- `wasm32_unknown`: WebAssembly 32-bit
-- `wasm64_unknown`: WebAssembly 64-bit
+- `wasm32_unknown`: WebAssembly 32-bit. In progress.
+- `wasm64_unknown`: WebAssembly 64-bit. In progress.
+
+No macOS target has been run. Mach-O output is checked by reading the bytes back, not by running a program on a Mac.
 
 
 ### x86-64 CPU Levels
