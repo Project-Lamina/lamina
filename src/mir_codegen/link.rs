@@ -566,10 +566,20 @@ fn build_unix_linker_args(
     Ok(args)
 }
 
-/// Build args for weld as a freestanding, no-libc linker. weld synthesizes its
-/// own `_start` and emits a static executable, so no C runtime objects, libc,
-/// or dynamic linker are passed. This is the toolchain path that needs no
-/// external assembler or linker.
+/// The C runtime objects for a weld link, or nothing when they cannot be found.
+///
+/// A linker does not add startup objects; `gcc` and `clang` hand them to `ld`, and the
+/// driver does the same here so that weld sees the same command line whoever ran it.
+/// They are located through a GNU compiler, which the default toolchain does not
+/// otherwise need, so their absence is not an error: weld synthesizes a `_start` of its
+/// own and the link goes ahead without libc's initialisation.
+fn weld_crt_args(target: &Target, before_user_object: bool) -> Vec<String> {
+    build_crt_args(target, before_user_object).unwrap_or_default()
+}
+
+/// Build args for weld. The driver supplies the C runtime objects, libc and the
+/// dynamic linker, as `gcc` does for `ld`; weld links what it is given. A freestanding
+/// target is then not a special case, only one whose driver adds none of them.
 fn build_weld_linker_args(
     input_path: &Path,
     output_path: &Path,
@@ -579,8 +589,14 @@ fn build_weld_linker_args(
 ) -> Vec<String> {
     let target_os = target.operating_system;
     let mut args = Vec::new();
+    let crt_before = weld_crt_args(target, true);
+    let has_crt = !crt_before.is_empty();
+    args.extend(crt_before);
     args.push(input_path.to_string_lossy().to_string());
     args.extend(object_args(runtime_objects));
+    if has_crt {
+        args.extend(weld_crt_args(target, false));
+    }
     if let Some(interpreter) = target.interpreter() {
         args.push("--dynamic-linker".to_string());
         args.push(interpreter.to_string());
@@ -1431,7 +1447,27 @@ mod tests {
             "expected -lc in args: {args:?}"
         );
         assert!(args.iter().any(|a| a == "-o"));
-        assert!(!args.iter().any(|a| a.contains("crt1.o")));
+    }
+
+    /// A linker does not add startup objects; the driver does, as `gcc` does for `ld`.
+    /// They are found through a GNU compiler, which this toolchain does not otherwise
+    /// need, so a host without one links as before and weld supplies its own `_start`.
+    #[test]
+    fn weld_args_carry_the_crt_objects_when_they_can_be_found() {
+        let input = Path::new("module.o");
+        let output = Path::new("module");
+        let target = Target::new(TargetArchitecture::X86_64, TargetOperatingSystem::Linux);
+        let args = build_weld_linker_args(input, output, &target, &[], &[]);
+        let named = |name: &str| args.iter().any(|a| a.contains(name));
+        if !named("crt1.o") {
+            return; // no GNU compiler here to locate them
+        }
+        assert!(named("crti.o"), "{args:?}");
+        assert!(named("crtn.o"), "{args:?}");
+        // crt1.o opens the link and crtn.o closes it, around the user's object.
+        let at = |name: &str| args.iter().position(|a| a.contains(name));
+        assert!(at("crt1.o") < at("module.o"), "{args:?}");
+        assert!(at("module.o") < at("crtn.o"), "{args:?}");
     }
 
     #[test]
