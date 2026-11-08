@@ -233,7 +233,7 @@ fn live_ranges(
             ranges.entry(vreg).or_default().push((2 * first, end));
         }
     }
-    for (_, spans) in ranges.iter_mut() {
+    for spans in ranges.values_mut() {
         spans.sort_unstable();
         let mut merged: Vec<(usize, usize)> = Vec::with_capacity(spans.len());
         for &(start, end) in spans.iter() {
@@ -265,13 +265,8 @@ fn affinities(function: &Function) -> HashMap<VirtualReg, Vec<VirtualReg>> {
                 ..
             } => note(*dst, *src),
             Instruction::IntBinary {
-                op,
-                dst: Register::Virtual(dst),
-                lhs: Operand::Register(Register::Virtual(src)),
-                ..
-            } if matches!(
-                op,
-                IntBinOp::Add
+                op:
+                    IntBinOp::Add
                     | IntBinOp::Sub
                     | IntBinOp::Mul
                     | IntBinOp::And
@@ -279,9 +274,11 @@ fn affinities(function: &Function) -> HashMap<VirtualReg, Vec<VirtualReg>> {
                     | IntBinOp::Xor
                     | IntBinOp::Shl
                     | IntBinOp::LShr
-                    | IntBinOp::AShr
-            ) =>
-            {
+                    | IntBinOp::AShr,
+                dst: Register::Virtual(dst),
+                lhs: Operand::Register(Register::Virtual(src)),
+                ..
+            } => {
                 note(*dst, *src)
             }
             _ => {}
