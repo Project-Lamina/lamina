@@ -138,6 +138,15 @@ pub enum RuntimeSymbol {
     Fixsfdi,
     /// compiler-rt `__fixunssfdi`: float to 64-bit unsigned, called when a 32-bit target splits an i64.
     Fixunssfdi,
+    /// compiler-rt `__extendhfsf2`: half precision widened to single. The half is carried
+    /// in a 16-bit integer, which is how a target without the format holds one.
+    Extendhfsf2,
+    /// compiler-rt `__truncsfhf2`: single narrowed to half, round to nearest even.
+    Truncsfhf2,
+    /// compiler-rt `__extendbfsf2`: bfloat16 widened to single, which is exact.
+    Extendbfsf2,
+    /// compiler-rt `__truncsfbf2`: single narrowed to bfloat16, round to nearest even.
+    Truncsfbf2,
     /// compiler-rt `__floattidf`: 128-bit integer arithmetic and conversion, called by i128 lowering.
     Floattidf,
     /// compiler-rt `__floatuntidf`: 128-bit integer arithmetic and conversion, called by i128 lowering.
@@ -157,7 +166,7 @@ pub enum RuntimeSymbol {
 }
 
 impl RuntimeSymbol {
-    pub const ALL: [RuntimeSymbol; 30] = [
+    pub const ALL: [RuntimeSymbol; 34] = [
         RuntimeSymbol::Malloc,
         RuntimeSymbol::Free,
         RuntimeSymbol::Exit,
@@ -180,6 +189,10 @@ impl RuntimeSymbol {
         RuntimeSymbol::Fixunsdfdi,
         RuntimeSymbol::Fixsfdi,
         RuntimeSymbol::Fixunssfdi,
+        RuntimeSymbol::Extendhfsf2,
+        RuntimeSymbol::Truncsfhf2,
+        RuntimeSymbol::Extendbfsf2,
+        RuntimeSymbol::Truncsfbf2,
         RuntimeSymbol::Floattidf,
         RuntimeSymbol::Floatuntidf,
         RuntimeSymbol::Fixdfti,
@@ -215,6 +228,10 @@ impl RuntimeSymbol {
             RuntimeSymbol::Fixunsdfdi => "__fixunsdfdi",
             RuntimeSymbol::Fixsfdi => "__fixsfdi",
             RuntimeSymbol::Fixunssfdi => "__fixunssfdi",
+            RuntimeSymbol::Extendhfsf2 => "__extendhfsf2",
+            RuntimeSymbol::Truncsfhf2 => "__truncsfhf2",
+            RuntimeSymbol::Extendbfsf2 => "__extendbfsf2",
+            RuntimeSymbol::Truncsfbf2 => "__truncsfbf2",
             RuntimeSymbol::Floattidf => "__floattidf",
             RuntimeSymbol::Floatuntidf => "__floatuntidf",
             RuntimeSymbol::Fixdfti => "__fixdfti",

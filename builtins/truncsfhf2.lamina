@@ -1,0 +1,54 @@
+@export
+fn @__truncsfhf2(f32 %a) -> u16 {
+entry:
+  %u = bitcast.f32.u32 %a
+  %shi = shr.u32 %u, 16
+  %sign = and.u32 %shi, 32768
+  %abits = and.u32 %u, 2147483647
+  %not_finite = ge.u32 %abits, 2139095040
+  br %not_finite, inf_or_nan, finite
+
+inf_or_nan:
+  %is_nan = gt.u32 %abits, 2139095040
+  %payload = select.u32 %is_nan, 32256, 31744
+  %nres = or.u32 %sign, %payload
+  %nr = trunc.u32.u16 %nres
+  ret.u16 %nr
+
+finite:
+  %overflows = ge.u32 %abits, 1199570944
+  br %overflows, to_inf, in_range
+
+to_inf:
+  %ires = or.u32 %sign, 31744
+  %ir = trunc.u32.u16 %ires
+  ret.u16 %ir
+
+in_range:
+  %is_normal = ge.u32 %abits, 947912704
+  br %is_normal, normal, subnormal
+
+normal:
+  %drop = shr.u32 %abits, 13
+  %odd = and.u32 %drop, 1
+  %bias = add.u32 4095, %odd
+  %t = add.u32 %abits, %bias
+  %rebased = sub.u32 %t, 939524096
+  %half = shr.u32 %rebased, 13
+  %hres = or.u32 %sign, %half
+  %hr = trunc.u32.u16 %hres
+  ret.u16 %hr
+
+subnormal:
+  %mag = bitcast.u32.f32 %abits
+  %scale = bitcast.u32.f32 1266679808
+  %scaled = mul.f32 %mag, %scale
+  %magic = bitcast.u32.f32 1258291200
+  %up = add.f32 %scaled, %magic
+  %down = sub.f32 %up, %magic
+  %m64 = fptoint.f32.u64 %down
+  %m = trunc.u64.u32 %m64
+  %sres = or.u32 %sign, %m
+  %sr = trunc.u32.u16 %sres
+  ret.u16 %sr
+}

@@ -1,0 +1,8 @@
+@export
+fn @__extendbfsf2(u16 %a) -> f32 {
+entry:
+  %w = extend.u16.u32 %a
+  %bits = shl.u32 %w, 16
+  %r = bitcast.u32.f32 %bits
+  ret.f32 %r
+}

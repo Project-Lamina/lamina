@@ -1,0 +1,26 @@
+@export
+fn @__truncsfbf2(f32 %a) -> u16 {
+entry:
+  %bits = bitcast.f32.u32 %a
+  %exp = and.u32 %bits, 2139095040
+  %man = and.u32 %bits, 8388607
+  %is_max_exp = eq.u32 %exp, 2139095040
+  %has_man = ne.u32 %man, 0
+  %is_nan = and.bool %is_max_exp, %has_man
+  br %is_nan, nan, finite
+
+nan:
+  %nq = shr.u32 %bits, 16
+  %quiet = or.u32 %nq, 64
+  %nr = trunc.u32.u16 %quiet
+  ret.u16 %nr
+
+finite:
+  %lsb = shr.u32 %bits, 16
+  %odd = and.u32 %lsb, 1
+  %bias = add.u32 32767, %odd
+  %rounded = add.u32 %bits, %bias
+  %hi = shr.u32 %rounded, 16
+  %r = trunc.u32.u16 %hi
+  ret.u16 %r
+}

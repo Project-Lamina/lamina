@@ -1,7 +1,8 @@
 # lamina-builtins
 
 Layer 1 of the runtime: the compiler runtime routines that lamina's own code
-generation calls for integer arithmetic no register holds. The user never
+generation calls for arithmetic no register holds, and for the 16-bit float
+formats a target's hardware may not have. The user never
 writes these calls; the wide lowering in `src/mir/codegen/convert/wide.rs`
 emits them, for `i128` everywhere and for `i64` on a target whose integer
 registers are 32 bits wide.
@@ -27,6 +28,10 @@ library function. Layer 2 (libc) is a separate, optional project. See
 | `fixdfti.lamina` | `__fixdfti` | done, calls `__fixunsdfti` |
 | `fixunssfti.lamina` | `__fixunssfti` | done |
 | `fixsfti.lamina` | `__fixsfti` | done, calls `__fixunssfti` |
+| `extendhfsf2.lamina` | `__extendhfsf2` | done |
+| `truncsfhf2.lamina` | `__truncsfhf2` | done |
+| `extendbfsf2.lamina` | `__extendbfsf2` | done |
+| `truncsfbf2.lamina` | `__truncsfbf2` | done |
 | `udivdi3.lamina` | `__udivdi3` | done |
 | `umoddi3.lamina` | `__umoddi3` | done |
 | `divdi3.lamina` | `__divdi3` | done, calls `__udivdi3` |
@@ -175,3 +180,25 @@ zero. Against the host libgcc, the int-to-float routines agree on every input.
 The float-to-int routines agree on every in-range input and differ only where
 libgcc is undefined.
 
+## Half precision
+
+`f16` and `bf16` are two bytes and no general-purpose register holds one as a
+float, so these four carry the value in a 16-bit integer and convert through
+`f32`. That is the same ABI compiler-rt uses on a target without the format.
+
+`__extendbfsf2` is a shift: bfloat16 has `f32`'s exponent field, so widening
+moves the 16 bits into the top of an `f32` and is exact for every value,
+infinities and NaNs included. `__truncsfbf2` rounds to nearest even and quiets
+a NaN rather than letting the payload fall off the end.
+
+`__extendhfsf2` and `__truncsfhf2` do the real work: half has a narrower
+exponent, so widening has to renormalise a subnormal and narrowing has to make
+one. The narrowing subnormal path rounds by adding and subtracting 2^23 in
+`f32`, which rounds to the nearest integer under the default mode, ties to even,
+and is exact because the scaled value never exceeds 1024.
+
+The property that checks them is a round trip: widening a half to `f32` and
+narrowing it back is the identity on every one of the 63490 bit patterns that is
+not a NaN, and likewise for all 65282 non-NaN bfloat16 patterns. NaN is left out
+because the payload is not required to survive and a signalling NaN may be
+quieted.

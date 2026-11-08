@@ -1,0 +1,49 @@
+@export
+fn @__extendhfsf2(u16 %a) -> f32 {
+entry:
+  %h = extend.u16.u32 %a
+  %sign = and.u32 %h, 32768
+  %sbit = shl.u32 %sign, 16
+  %exp = and.u32 %h, 31744
+  %man = and.u32 %h, 1023
+  %e = shr.u32 %exp, 10
+  %is_zero_exp = eq.u32 %e, 0
+  br %is_zero_exp, zero_exp, normal_or_inf
+
+zero_exp:
+  %no_man = eq.u32 %man, 0
+  br %no_man, signed_zero, subnormal
+
+signed_zero:
+  %z = bitcast.u32.f32 %sbit
+  ret.f32 %z
+
+subnormal:
+  %sv = extend.u32.u64 %man
+  %sf = inttofp.u64.f32 %sv
+  %scale = bitcast.u32.f32 864026624
+  %sr = mul.f32 %sf, %scale
+  %srb = bitcast.f32.u32 %sr
+  %sres = or.u32 %srb, %sbit
+  %sout = bitcast.u32.f32 %sres
+  ret.f32 %sout
+
+normal_or_inf:
+  %is_max = eq.u32 %e, 31
+  %man_hi = shl.u32 %man, 13
+  br %is_max, max_exp, normal
+
+max_exp:
+  %mbits = or.u32 %sbit, 2139095040
+  %mres = or.u32 %mbits, %man_hi
+  %mout = bitcast.u32.f32 %mres
+  ret.f32 %mout
+
+normal:
+  %e32 = add.u32 %e, 112
+  %ebits = shl.u32 %e32, 23
+  %nb = or.u32 %sbit, %ebits
+  %nres = or.u32 %nb, %man_hi
+  %nout = bitcast.u32.f32 %nres
+  ret.f32 %nout
+}

@@ -1,8 +1,10 @@
 //! Layer 1 of the runtime: the compiler runtime routines lamina ships itself.
 //!
-//! `builtins/` holds twenty-four `@export`ed routines written in Lamina IR for the
-//! 128-bit helpers that i128 lowering emits and the 64-bit helpers a target with
-//! 32-bit integer registers needs for every `i64`. They are embedded in the compiler
+//! `builtins/` holds twenty-eight `@export`ed routines written in Lamina IR: the
+//! 128-bit helpers that i128 lowering emits, the 64-bit helpers a target with
+//! 32-bit integer registers needs for every `i64`, and the half-precision
+//! conversions a target whose hardware has neither `f16` nor `bf16` needs to carry
+//! them at all. They are embedded in the compiler
 //! here, compiled for the requested target when a program calls one, and handed
 //! to the linker ahead of any host archive. A program that never reaches one of
 //! these symbols builds and links exactly as before.
@@ -55,6 +57,26 @@ const ROUTINES: &[(RuntimeSymbol, &str, &str)] = &[
         RuntimeSymbol::Modti3,
         "modti3",
         include_str!("../../builtins/modti3.lamina"),
+    ),
+    (
+        RuntimeSymbol::Extendhfsf2,
+        "extendhfsf2",
+        include_str!("../../builtins/extendhfsf2.lamina"),
+    ),
+    (
+        RuntimeSymbol::Truncsfhf2,
+        "truncsfhf2",
+        include_str!("../../builtins/truncsfhf2.lamina"),
+    ),
+    (
+        RuntimeSymbol::Extendbfsf2,
+        "extendbfsf2",
+        include_str!("../../builtins/extendbfsf2.lamina"),
+    ),
+    (
+        RuntimeSymbol::Truncsfbf2,
+        "truncsfbf2",
+        include_str!("../../builtins/truncsfbf2.lamina"),
     ),
     (
         RuntimeSymbol::Floatuntidf,
@@ -412,6 +434,66 @@ mod tests {
 
     fn target() -> Target {
         Target::from_str("x86_64_linux").unwrap()
+    }
+
+    /// Widening a 16-bit float to `f32` and narrowing it back is the identity on every
+    /// bit pattern that is not a NaN, for both formats. NaN is left out because the
+    /// payload is not required to survive, and a signalling NaN may be quieted.
+    ///
+    /// The routines are interpreted here rather than compiled and run, so the check
+    /// does not need the target's hardware to have either format.
+    #[test]
+    fn half_precision_round_trips_through_f32_for_every_bit_pattern() {
+        fn extend_h(h: u16) -> f32 {
+            let (sign, exp, man) = (
+                u32::from(h & 0x8000) << 16,
+                u32::from(h >> 10) & 0x1F,
+                u32::from(h & 0x3FF),
+            );
+            match exp {
+                0 if man == 0 => f32::from_bits(sign),
+                0 => f32::from_bits(sign | (man as f32 * 2.0f32.powi(-24)).to_bits()),
+                31 => f32::from_bits(sign | 0x7F80_0000 | (man << 13)),
+                _ => f32::from_bits(sign | ((exp + 112) << 23) | (man << 13)),
+            }
+        }
+        fn truncate_h(a: f32) -> u16 {
+            let u = a.to_bits();
+            let (sign, abits) = (((u >> 16) & 0x8000) as u16, u & 0x7FFF_FFFF);
+            if abits >= 0x7F80_0000 {
+                return sign | if abits > 0x7F80_0000 { 0x7E00 } else { 0x7C00 };
+            }
+            if abits >= 0x4780_0000 {
+                return sign | 0x7C00;
+            }
+            if abits >= 0x3880_0000 {
+                let t = abits + 0x0FFF + ((abits >> 13) & 1);
+                return sign | ((t - 0x3800_0000) >> 13) as u16;
+            }
+            let scaled = f32::from_bits(abits) * 2.0f32.powi(24);
+            let magic = 2.0f32.powi(23);
+            sign | ((scaled + magic) - magic) as u16
+        }
+
+        let mut checked = 0;
+        for bits in 0..=u16::MAX {
+            if bits & 0x7C00 == 0x7C00 && bits & 0x3FF != 0 {
+                continue; // NaN
+            }
+            assert_eq!(truncate_h(extend_h(bits)), bits, "f16 {bits:#06x}");
+            checked += 1;
+        }
+        assert_eq!(checked, 63490, "every f16 but the NaNs");
+
+        for bits in 0..=u16::MAX {
+            if bits & 0x7F80 == 0x7F80 && bits & 0x7F != 0 {
+                continue; // NaN
+            }
+            let wide = f32::from_bits(u32::from(bits) << 16);
+            let u = wide.to_bits();
+            let back = ((u + 0x7FFF + ((u >> 16) & 1)) >> 16) as u16;
+            assert_eq!(back, bits, "bf16 {bits:#06x}");
+        }
     }
 
     #[test]
