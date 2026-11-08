@@ -26,20 +26,6 @@ pub(super) fn is_self_move(line: &str) -> bool {
     matches!(operands.split_once(", "), Some((src, dst)) if src.starts_with('%') && src == dst)
 }
 
-/// Drop `movq %r, %r` from finished assembly.
-pub(super) fn strip_self_moves(asm: Vec<u8>) -> Vec<u8> {
-    let Ok(text) = String::from_utf8(asm) else {
-        return Vec::new();
-    };
-    let mut out = String::with_capacity(text.len());
-    for line in text.split_inclusive('\n') {
-        if !is_self_move(line.trim_end_matches('\n')) {
-            out.push_str(line);
-        }
-    }
-    out.into_bytes()
-}
-
 /// Emit a parallel copy into `dsts`, honouring the fact that a source may itself be one
 /// of the destinations. Identity moves are dropped; a cycle is broken through rax.
 pub(super) fn emit_parallel_copy(

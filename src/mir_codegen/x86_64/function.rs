@@ -650,7 +650,7 @@ pub(super) fn compile_single_function_x86_64(
             .map_err(io_codegen_error)?;
         macho_unwind::emit(&mut output, &label, encoding).map_err(io_codegen_error)?;
     }
-    Ok(strip_self_moves(output.inner))
+    Ok(super::peephole::run(output.inner))
 }
 
 /// A `@naked` body is emitted verbatim, so it must be inline assembly with no operands and

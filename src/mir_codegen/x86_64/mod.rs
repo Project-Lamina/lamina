@@ -13,6 +13,7 @@ mod inline_asm;
 mod inline_asm_tests;
 mod instruction;
 mod moves;
+mod peephole;
 mod selection;
 mod simd;
 #[cfg(test)]
