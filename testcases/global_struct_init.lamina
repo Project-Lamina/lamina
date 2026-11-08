@@ -9,6 +9,7 @@ global $fmt_g: [4 x i8] = "%g\n"
 type !Pair = struct { a: i32, b: i64 }
 global $pair: !Pair = {7, 9}
 global $mixed: struct { k: i8, v: f64 } = {65, 2.5}
+global $sparse: !Pair = {7}
 
 fn @main() -> i64 {
 entry:
@@ -26,6 +27,13 @@ entry:
   %g1 = getfieldptr.struct { k: i8, v: f64 } $mixed, 1
   %v = load.f64 %g1
   call @print_f64(%v)
+  %s0 = getfieldptr.!Pair $sparse, 0
+  %sa = load.i32 %s0
+  %saw = extend.i32.i64 %sa
+  call @print_i64(%saw)
+  %s1 = getfieldptr.!Pair $sparse, 1
+  %sb = load.i64 %s1
+  call @print_i64(%sb)
   ret.i64 0
 }
 
