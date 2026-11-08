@@ -463,7 +463,12 @@ impl TransformPipeline {
     pub fn for_target(opt_level: u8, target: TargetArchitecture, level: X86CpuLevel) -> Self {
         let mut pipeline =
             Self::default_for_opt_level_on(opt_level, vector_unit_for(target, level));
-        if opt_level >= 2 && target == TargetArchitecture::Aarch64 {
+        if opt_level >= 2
+            && matches!(
+                target,
+                TargetArchitecture::Aarch64 | TargetArchitecture::X86_64
+            )
+        {
             pipeline.canonicalize_addresses = true;
             pipeline.hoist_constants = true;
         }
