@@ -64,6 +64,10 @@ pub fn handle_jit_compilation(
         Target::detect_host().map_err(LaminaError::ValidationError)?
     };
 
+    // As in `compile`: the data layout reads the target, so `--cpu-level` has to reach
+    // it and not only the codegen settings.
+    let target = target.refining_variant(options.mir_codegen_settings.arch_variant);
+
     let host = Target::detect_host().map_err(LaminaError::ValidationError)?;
     if target.architecture != host.architecture || target.operating_system != host.operating_system
     {

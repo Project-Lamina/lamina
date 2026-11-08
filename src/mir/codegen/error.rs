@@ -94,13 +94,7 @@ impl fmt::Display for FromIRError {
             FromIRError::UnsupportedGlobal(reason) => {
                 write!(f, "global not yet supported: {reason}")
             }
-            FromIRError::UnsupportedFloatFormat(what) => {
-                write!(
-                    f,
-                    "{what} is a type the IR names and no backend places yet; \
-                     convert through f32 until one does"
-                )
-            }
+            FromIRError::UnsupportedFloatFormat(reason) => write!(f, "{reason}"),
             FromIRError::UnsupportedAggregate(reason) => {
                 write!(f, "aggregate not yet supported: {reason}")
             }

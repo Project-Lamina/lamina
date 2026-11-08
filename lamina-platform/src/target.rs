@@ -6,12 +6,13 @@
 use std::{fmt, str::FromStr};
 
 use crate::arch_table::{
-    ArchSpec, Endianness, FloatAggregateAbi, OutputArtifact, PointerWidth, REFUSED_SPELLINGS,
-    TargetDataLayout,
+    ArchSpec, Endianness, FloatAggregateAbi, HalfPrecision, OutputArtifact, PointerWidth,
+    REFUSED_SPELLINGS, TargetDataLayout,
 };
 use crate::arch_variant::{
     Aarch64Level, ArchVariant, Armv7Profile, Armv7Variant, PowerLevel, RiscvIsa,
 };
+use crate::cpu_level::X86CpuLevel;
 use crate::detection::{detect_host_architecture_only, detect_host_os};
 use crate::environment::TargetEnvironment;
 
@@ -60,6 +61,19 @@ impl Target {
             operating_system,
             environment: default_environment(architecture, operating_system),
             variant: architecture.spec().variants.default_variant(),
+        }
+    }
+
+    /// Apply `variant` only when it belongs to this architecture's axis.
+    ///
+    /// [`Target::with_variant`] falls back to the axis default for a variant of another
+    /// family, which would throw away one the target string already chose: a
+    /// `--cpu-level` meant for x86-64 would strip the `v` from `rv64gcv`.
+    pub fn refining_variant(self, variant: ArchVariant) -> Self {
+        if self.architecture.spec().variants.accept(variant) == variant {
+            self.with_variant(variant)
+        } else {
+            self
         }
     }
 
@@ -154,7 +168,34 @@ impl Target {
             (FloatAggregateAbi::SysV, TargetOperatingSystem::Windows) => FloatAggregateAbi::Win64,
             (abi, _) => abi,
         };
+        layout.half_precision = self.half_precision();
         layout
+    }
+
+    /// The 16-bit float formats this target's hardware has.
+    ///
+    /// No architecture has either by its bare name, so each comes from the variant: the
+    /// AVX-512 extensions on x86-64, the revision on AArch64, and the Z extensions on
+    /// RISC-V. F16C counts for `f16` on x86-64 because it converts, which is all a
+    /// front end needs to carry the format.
+    pub fn half_precision(&self) -> HalfPrecision {
+        match self.variant {
+            ArchVariant::X86(features) => HalfPrecision {
+                f16: features.avx512_fp16 || features.level >= X86CpuLevel::V3,
+                bf16: features.avx512_bf16,
+            },
+            ArchVariant::Aarch64(level) => HalfPrecision {
+                f16: level.has_fp16(),
+                bf16: level.has_bf16(),
+            },
+            ArchVariant::Riscv(isa) => HalfPrecision {
+                f16: isa.zfh,
+                bf16: isa.zfbfmin,
+            },
+            ArchVariant::None | ArchVariant::Armv7(_) | ArchVariant::PowerPC64(_) => {
+                HalfPrecision::default()
+            }
+        }
     }
 
     /// The ELF interpreter this target's environment asks for, if it asks for one.
@@ -603,6 +644,38 @@ mod tests {
     use super::*;
     use crate::arch_variant::VariantAxis;
     use crate::cpu_level::{X86CpuLevel, X86Features};
+
+    /// A variant meant for another architecture must not reach through `with_variant`
+    /// and reset the one the target string already chose.
+    #[test]
+    fn refining_keeps_a_variant_of_another_family_out() {
+        let riscv: Target = "riscv64_linux".parse().expect("riscv64_linux");
+        let with_v = riscv.with_variant(ArchVariant::Riscv("rv64gcv".parse().expect("rv64gcv")));
+        assert!(with_v.variant.riscv().expect("riscv variant").v);
+
+        let x86_level = ArchVariant::X86(X86Features::at(X86CpuLevel::V4));
+        assert!(
+            with_v
+                .refining_variant(x86_level)
+                .variant
+                .riscv()
+                .expect("kept")
+                .v,
+            "an x86 level must leave a riscv variant alone"
+        );
+        assert!(
+            !with_v
+                .with_variant(x86_level)
+                .variant
+                .riscv()
+                .expect("reset")
+                .v,
+            "with_variant resets to the axis default, which is what refining avoids"
+        );
+
+        let x86: Target = "x86_64_linux".parse().expect("x86_64_linux");
+        assert_eq!(x86.refining_variant(x86_level).variant, x86_level);
+    }
     use crate::environment::{CompilerRuntime, Libc};
 
     fn listed(name: &str) -> bool {

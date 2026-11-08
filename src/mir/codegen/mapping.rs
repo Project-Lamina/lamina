@@ -25,7 +25,7 @@ pub const MAX_REGISTER_AGGREGATE: u64 = 16;
 
 /// Maps an IR primitive to the MIR type that holds it. Signedness is dropped, because
 /// MIR carries it on the operation rather than the value.
-pub fn map_ir_prim(p: IRPrim) -> Result<MirType, FromIRError> {
+pub fn map_ir_prim(p: IRPrim, layout: TargetDataLayout) -> Result<MirType, FromIRError> {
     let scalar = match p {
         IRPrim::I8 | IRPrim::U8 => ScalarType::I8,
         IRPrim::I16 | IRPrim::U16 => ScalarType::I16,
@@ -35,9 +35,7 @@ pub fn map_ir_prim(p: IRPrim) -> Result<MirType, FromIRError> {
         IRPrim::F64 => ScalarType::F64,
         IRPrim::Bool => ScalarType::I1,
         IRPrim::Ptr => ScalarType::Ptr,
-        IRPrim::F16 | IRPrim::BF16 => {
-            return Err(FromIRError::UnsupportedFloatFormat(p.as_str().to_string()));
-        }
+        IRPrim::F16 | IRPrim::BF16 => return Err(half_precision_refusal(p, layout)),
         IRPrim::I128 | IRPrim::U128 => return Err(FromIRError::UnsupportedType),
     };
     Ok(MirType::Scalar(scalar))
@@ -56,20 +54,24 @@ pub fn signedness_of(ty: &IRType<'_>) -> Signedness {
 ///
 /// Currently only primitive types are supported. Composite types (structs
 /// and arrays) will return an error as they require additional lowering.
-pub fn map_ir_type(ty: &IRType<'_>) -> Result<MirType, FromIRError> {
+pub fn map_ir_type(ty: &IRType<'_>, layout: TargetDataLayout) -> Result<MirType, FromIRError> {
     match ty {
-        IRType::Primitive(p) => map_ir_prim(*p),
+        IRType::Primitive(p) => map_ir_prim(*p, layout),
         IRType::Vector {
             element_type,
             lanes,
-        } => map_ir_vector(*element_type, *lanes),
+        } => map_ir_vector(*element_type, *lanes, layout),
         _ => Err(FromIRError::UnsupportedType),
     }
 }
 
 /// Maps `<lanes x element_type>` to the vector register that holds it. A shape that
 /// fills no register is refused rather than split across several.
-pub fn map_ir_vector(element_type: IRPrim, lanes: u32) -> Result<MirType, FromIRError> {
+pub fn map_ir_vector(
+    element_type: IRPrim,
+    lanes: u32,
+    layout: TargetDataLayout,
+) -> Result<MirType, FromIRError> {
     let lane = match element_type {
         IRPrim::I8 | IRPrim::U8 => VectorLane::I8,
         IRPrim::I16 | IRPrim::U16 => VectorLane::I16,
@@ -77,12 +79,7 @@ pub fn map_ir_vector(element_type: IRPrim, lanes: u32) -> Result<MirType, FromIR
         IRPrim::I64 | IRPrim::U64 => VectorLane::I64,
         IRPrim::F32 => VectorLane::F32,
         IRPrim::F64 => VectorLane::F64,
-        IRPrim::F16 | IRPrim::BF16 => {
-            return Err(FromIRError::UnsupportedFloatFormat(format!(
-                "<{lanes} x {}>",
-                element_type.as_str()
-            )));
-        }
+        IRPrim::F16 | IRPrim::BF16 => return Err(half_precision_refusal(element_type, layout)),
         IRPrim::Bool | IRPrim::Ptr | IRPrim::I128 | IRPrim::U128 => {
             return Err(FromIRError::UnsupportedType);
         }
@@ -431,26 +428,81 @@ fn collect_leaves(
     }
 }
 
+/// Why a 16-bit float cannot be lowered here: the hardware does not have it, or it does
+/// and no backend writes it yet. The two are different problems and only one of them is
+/// fixed by naming a different target.
+fn half_precision_refusal(p: IRPrim, layout: TargetDataLayout) -> FromIRError {
+    let declared = match p {
+        IRPrim::F16 => layout.half_precision.f16,
+        _ => layout.half_precision.bf16,
+    };
+    let name = p.as_str();
+    FromIRError::UnsupportedFloatFormat(if declared {
+        format!("{name} is a type this target has and no backend writes yet")
+    } else {
+        let how = match p {
+            IRPrim::F16 => "x86-64 from v3, armv8.2-a, or the Zfh extension",
+            _ => "--cpu-level v4+bf16, armv8.6-a, or the Zfbfmin extension",
+        };
+        format!("{name} is not a format this target declares; name the hardware that has it: {how}")
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lamina_platform::{
+        ArchVariant, Target, TargetArchitecture, TargetOperatingSystem, X86CpuLevel, X86Features,
+    };
 
-    /// The IR names both formats so a front end can carry them, and lowering says which
-    /// one it cannot place rather than reporting an anonymous unsupported type.
-    #[test]
-    fn a_half_precision_scalar_is_refused_by_name() {
-        for (ty, name) in [(IRPrim::F16, "f16"), (IRPrim::BF16, "bf16")] {
-            let error = map_ir_prim(ty).expect_err("no backend places it yet");
-            let text = error.to_string();
-            assert!(text.contains(name), "{text}");
-            assert!(text.contains("convert through f32"), "{text}");
-        }
+    fn x86(level: X86CpuLevel, bf16: bool) -> TargetDataLayout {
+        Target::new(TargetArchitecture::X86_64, TargetOperatingSystem::Linux)
+            .with_variant(ArchVariant::X86(X86Features {
+                level,
+                avx512_fp16: false,
+                avx512_bf16: bf16,
+            }))
+            .data_layout()
     }
 
-    /// A vector of them is refused the same way, with the shape in the message.
+    /// A target that does not have the format says so, and says what would: the fix is
+    /// to name the hardware, not to wait for a backend.
     #[test]
-    fn a_half_precision_vector_lane_is_refused_by_name() {
-        let error = map_ir_vector(IRPrim::BF16, 8).expect_err("no backend places it yet");
-        assert!(error.to_string().contains("<8 x bf16>"), "{error}");
+    fn a_format_the_target_lacks_points_at_the_hardware_that_has_it() {
+        let plain = x86(X86CpuLevel::V2, false);
+        let error = map_ir_prim(IRPrim::BF16, plain).expect_err("v2 has no bf16");
+        let text = error.to_string();
+        assert!(
+            text.contains("bf16 is not a format this target declares"),
+            "{text}"
+        );
+        assert!(text.contains("--cpu-level v4+bf16"), "{text}");
+
+        let f16_error = map_ir_prim(IRPrim::F16, plain).expect_err("v2 has no f16");
+        assert!(f16_error.to_string().contains("armv8.2-a"), "{f16_error}");
+    }
+
+    /// A target that does have it gets the other answer, because naming a different
+    /// target would not help.
+    #[test]
+    fn a_format_the_target_has_is_still_waiting_on_a_backend() {
+        let error = map_ir_prim(IRPrim::BF16, x86(X86CpuLevel::V4, true))
+            .expect_err("no backend writes bf16 yet");
+        let text = error.to_string();
+        assert!(text.contains("a type this target has"), "{text}");
+        assert!(!text.contains("--cpu-level"), "{text}");
+
+        // F16C arrives with v3, so f16 is declared there even without AVX-512-FP16.
+        let f16 = map_ir_prim(IRPrim::F16, x86(X86CpuLevel::V3, false))
+            .expect_err("no backend writes f16 yet");
+        assert!(f16.to_string().contains("a type this target has"), "{f16}");
+    }
+
+    /// A vector of one is refused for the same reason as the scalar.
+    #[test]
+    fn a_half_precision_vector_lane_is_refused_the_same_way() {
+        let error = map_ir_vector(IRPrim::BF16, 8, x86(X86CpuLevel::V2, false))
+            .expect_err("v2 has no bf16");
+        assert!(error.to_string().contains("bf16"), "{error}");
     }
 }

@@ -599,7 +599,7 @@ impl<'c, 'a> Cx<'c, 'a> {
         operand: Operand,
         signed: bool,
     ) -> Result<Operand, FromIRError> {
-        let from = map_ir_prim(ty)?;
+        let from = map_ir_prim(ty, self.layout)?;
         let to = self.word();
         if from == to {
             return Ok(operand);
@@ -1210,7 +1210,7 @@ pub(super) fn lower_instruction<'a>(
             let a = cx.operand_words(value)?;
             let dst = resolve_or_alloc(result, cx.vregs, cx.vars);
             let word = cx.word();
-            let to = map_ir_prim(*target_type)?;
+            let to = map_ir_prim(*target_type, cx.layout)?;
             if to == word {
                 cx.out.push(Instruction::Copy {
                     ty: word,
@@ -1391,7 +1391,7 @@ pub(super) fn lower_instruction<'a>(
                     mir_args.push(address);
                     continue;
                 }
-                let mut ty = map_ir_type(arg_ty)?;
+                let mut ty = map_ir_type(arg_ty, cx.layout)?;
                 let mut operand = resolve_operand(value, cx.vregs, cx.vars, cx.globals)?;
                 // C promotes a float in the variadic tail to a double, as the direct
                 // path does.
@@ -1411,7 +1411,7 @@ pub(super) fn lower_instruction<'a>(
             }
             let ret_ty = match return_type {
                 IRType::Void => None,
-                other => Some(map_ir_type(other)?),
+                other => Some(map_ir_type(other, cx.layout)?),
             };
             let target = resolve_operand(target, cx.vregs, cx.vars, cx.globals)?;
             let ret = result.map(|name| resolve_or_alloc(name, cx.vregs, cx.vars));
@@ -1584,7 +1584,7 @@ pub(super) fn lower_instruction<'a>(
                         cx.write_pair(pair, words);
                     } else {
                         let src = resolve_operand(value, cx.vregs, cx.vars, cx.globals)?;
-                        let ty = map_ir_prim(*source_type)?;
+                        let ty = map_ir_prim(*source_type, cx.layout)?;
                         let address = cx.pair_slot();
                         cx.out.push(Instruction::Store {
                             ty,
@@ -1609,7 +1609,7 @@ pub(super) fn lower_instruction<'a>(
                     let words = cx.operand_words(value)?;
                     let address = cx.pair_slot();
                     cx.store_words(address.clone(), words);
-                    let ty = map_ir_prim(*target_type)?;
+                    let ty = map_ir_prim(*target_type, cx.layout)?;
                     let dst = resolve_or_alloc(result, cx.vregs, cx.vars);
                     cx.out.push(Instruction::Load {
                         ty,
@@ -1744,7 +1744,7 @@ pub(super) fn lower_instruction<'a>(
                 .variadic_wide_results
                 .insert(slot, wide_aggregate(cx.int64_regs));
             cx.out.push(Instruction::VaArg {
-                ty: map_ir_prim(*ty)?,
+                ty: map_ir_prim(*ty, cx.layout)?,
                 dst: Register::Virtual(slot),
                 ap,
             });

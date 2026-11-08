@@ -636,7 +636,7 @@ pub fn from_ir_for_target(
                 mir_module.globals.insert(global_name.to_string(), global);
                 continue;
             }
-            let ty = map_ir_type(&resolved)?;
+            let ty = map_ir_type(&resolved, layout)?;
             let initializer = global_initializer(
                 global_name,
                 ty,
@@ -1267,7 +1267,7 @@ fn convert_function<'a>(
                     .with_return(MirType::Scalar(ScalarType::Ptr))
                     .with_return_aggregate(aggregate);
             } else {
-                let ty = map_ir_type(other)?;
+                let ty = map_ir_type(other, layout)?;
                 mir_sig = mir_sig
                     .with_return(ty)
                     .with_return_signedness(signedness_of(other));
@@ -1331,7 +1331,7 @@ fn convert_function<'a>(
             RegisterClass::Vec => Register::Virtual(vreg_alloc.allocate_vec()),
             _ => Register::Virtual(vreg_alloc.allocate_gpr()),
         };
-        let mir_ty = map_ir_type(&param.ty)?;
+        let mir_ty = map_ir_type(&param.ty, layout)?;
         register_types.insert(v.clone(), mir_ty);
         mir_sig.params.push(
             Parameter::new(v.clone(), mir_ty)
@@ -1486,7 +1486,7 @@ fn convert_function<'a>(
                         {
                             continue;
                         }
-                        let ty = map_ir_type(&parameter.ty)?;
+                        let ty = map_ir_type(&parameter.ty, layout)?;
                         normalize_lowered_literal(argument, ty);
                     }
                 }
@@ -1516,7 +1516,9 @@ fn convert_function<'a>(
                         Instruction::Call { name, .. } => module
                             .functions
                             .get(name.as_str())
-                            .and_then(|callee| map_ir_type(&callee.signature.return_type).ok())
+                            .and_then(|callee| {
+                                map_ir_type(&callee.signature.return_type, layout).ok()
+                            })
                             .or_else(|| io_intrinsic_result_type(name, int64_regs)),
                         Instruction::Lea { .. }
                         | Instruction::StackAddr { .. }
@@ -1682,7 +1684,7 @@ fn convert_instruction<'a>(
             lhs,
             rhs,
         } => {
-            let mir_ty = map_ir_prim(*ty)?;
+            let mir_ty = map_ir_prim(*ty, layout)?;
             let mut lhs_op = resolve_operand(lhs, vreg_alloc, var_to_reg, globals)?;
             let mut rhs_op = resolve_operand(rhs, vreg_alloc, var_to_reg, globals)?;
             normalize_lowered_literal(&mut lhs_op, mir_ty);
@@ -1720,7 +1722,7 @@ fn convert_instruction<'a>(
                 fresh
             };
 
-            let mir_ty = map_ir_prim(*ty)?;
+            let mir_ty = map_ir_prim(*ty, layout)?;
             // Read operands using the PREVIOUS bindings to avoid using the new dest mapping
             let lhs_op = resolve_operand(lhs, vreg_alloc, var_to_reg, globals)?;
             let rhs_op = resolve_operand(rhs, vreg_alloc, var_to_reg, globals)?;
@@ -1769,7 +1771,7 @@ fn convert_instruction<'a>(
             Ok(vec![mir])
         }
         IRInst::Copy { result, ty, value } => {
-            let mir_ty = map_ir_type(ty)?;
+            let mir_ty = map_ir_type(ty, layout)?;
             let src = resolve_operand(value, vreg_alloc, var_to_reg, globals)?;
             let dst = resolve_or_alloc(result, vreg_alloc, var_to_reg);
             let mut mov = Instruction::Copy {
@@ -1786,7 +1788,7 @@ fn convert_instruction<'a>(
             ty,
             value,
         } => {
-            let mir_ty = map_ir_prim(*ty)?;
+            let mir_ty = map_ir_prim(*ty, layout)?;
             let float = mir_ty.is_float();
             let dst = resolve_or_alloc(result, vreg_alloc, var_to_reg);
             let mut src = resolve_operand(value, vreg_alloc, var_to_reg, globals)?;
@@ -1847,7 +1849,7 @@ fn convert_instruction<'a>(
             rhs,
         } => {
             let dst = resolve_or_alloc(result, vreg_alloc, var_to_reg);
-            let mir_ty = map_ir_prim(*ty)?;
+            let mir_ty = map_ir_prim(*ty, layout)?;
             let lhs_op = resolve_operand(lhs, vreg_alloc, var_to_reg, globals)?;
             let rhs_op = resolve_operand(rhs, vreg_alloc, var_to_reg, globals)?;
             let mir = match (*ty, op) {
@@ -2084,7 +2086,7 @@ fn convert_instruction<'a>(
             align,
         } => {
             let dst = resolve_or_alloc(result, vreg_alloc, var_to_reg);
-            let mir_ty = map_ir_type(ty)?;
+            let mir_ty = map_ir_type(ty, layout)?;
             let base = match ptr {
                 IRVal::Variable(id) => var_to_reg
                     .get(id)
@@ -2122,7 +2124,7 @@ fn convert_instruction<'a>(
             volatile,
             align,
         } => {
-            let mir_ty = map_ir_type(ty)?;
+            let mir_ty = map_ir_type(ty, layout)?;
             let base = match ptr {
                 IRVal::Variable(id) => var_to_reg
                     .get(id)
@@ -2216,7 +2218,7 @@ fn convert_instruction<'a>(
             let mut instructions = Vec::new();
             let fixed = variadic_fixed.unwrap_or(args.len());
             for (index, (arg_ty, argument)) in args.iter().enumerate() {
-                let mut mir_ty = map_ir_type(arg_ty)?;
+                let mut mir_ty = map_ir_type(arg_ty, layout)?;
                 let mut operand = resolve_operand(argument, vreg_alloc, var_to_reg, globals)?;
                 normalize_lowered_literal(&mut operand, mir_ty);
                 if index >= fixed && mir_ty == MirType::Scalar(ScalarType::F32) {
@@ -2235,7 +2237,7 @@ fn convert_instruction<'a>(
             }
             let ret_ty = match return_type {
                 IRType::Void => None,
-                other => Some(map_ir_type(other)?),
+                other => Some(map_ir_type(other, layout)?),
             };
             let ret = result.map(|name| resolve_or_alloc(name, vreg_alloc, var_to_reg));
             instructions.push(Instruction::CallIndirect {
@@ -2266,8 +2268,8 @@ fn convert_instruction<'a>(
             target_type,
             value,
         } => {
-            let from = map_ir_prim(*source_type)?;
-            let to = map_ir_prim(*target_type)?;
+            let from = map_ir_prim(*source_type, layout)?;
+            let to = map_ir_prim(*target_type, layout)?;
             let signed = matches!(instr, IRInst::SignExtend { .. });
             let widening = !matches!(instr, IRInst::Trunc { .. });
             let name = if signed {
@@ -2319,8 +2321,8 @@ fn convert_instruction<'a>(
             target_type,
             value,
         } => {
-            let from = map_ir_prim(*source_type)?;
-            let to = map_ir_prim(*target_type)?;
+            let from = map_ir_prim(*source_type, layout)?;
+            let to = map_ir_prim(*target_type, layout)?;
             let dst = match var_to_reg.get(result) {
                 Some(existing) => existing.clone(),
                 None => {
@@ -2346,8 +2348,8 @@ fn convert_instruction<'a>(
             target_type,
             value,
         } => {
-            let from = map_ir_prim(*source_type)?;
-            let to = map_ir_prim(*target_type)?;
+            let from = map_ir_prim(*source_type, layout)?;
+            let to = map_ir_prim(*target_type, layout)?;
             let dst = resolve_or_alloc(result, vreg_alloc, var_to_reg);
             let mut src = resolve_operand(value, vreg_alloc, var_to_reg, globals)?;
             normalize_lowered_literal(&mut src, from);
@@ -2365,8 +2367,8 @@ fn convert_instruction<'a>(
             target_type,
             value,
         } => {
-            let from = map_ir_prim(*source_type)?;
-            let to = map_ir_prim(*target_type)?;
+            let from = map_ir_prim(*source_type, layout)?;
+            let to = map_ir_prim(*target_type, layout)?;
             if from == to || !from.is_float() || !to.is_float() {
                 return Err(FromIRError::InvalidConversion(format!(
                     "fpcast from {source_type} to {target_type} converts between the float types only"
@@ -2387,8 +2389,8 @@ fn convert_instruction<'a>(
                 return Err(FromIRError::UnsupportedType);
             }
 
-            let from = map_ir_prim(*source_type)?;
-            let to = map_ir_prim(*target_type)?;
+            let from = map_ir_prim(*source_type, layout)?;
+            let to = map_ir_prim(*target_type, layout)?;
             let mut src = resolve_operand(value, vreg_alloc, var_to_reg, globals)?;
             normalize_lowered_literal(&mut src, from);
             let dst = resolve_or_alloc(result, vreg_alloc, var_to_reg);
@@ -2404,7 +2406,7 @@ fn convert_instruction<'a>(
         } => {
             let dst = resolve_or_alloc(result, vreg_alloc, var_to_reg);
 
-            let mir_ty = map_ir_type(ty)?;
+            let mir_ty = map_ir_type(ty, layout)?;
 
             // Condition must be a variable bound to a MIR register.
             let cond_reg = match cond {
@@ -2437,7 +2439,7 @@ fn convert_instruction<'a>(
             let val_op = resolve_operand(ptr_value, vreg_alloc, var_to_reg, globals)?;
             Ok(vec![Instruction::IntConvert {
                 from: MirType::Scalar(ScalarType::Ptr),
-                to: map_ir_prim(*target_type)?,
+                to: map_ir_prim(*target_type, layout)?,
                 signed: false,
                 dst,
                 src: val_op,
@@ -2450,7 +2452,7 @@ fn convert_instruction<'a>(
         } => {
             let dst = resolve_or_alloc(result, vreg_alloc, var_to_reg);
             let mut val_op = resolve_operand(int_value, vreg_alloc, var_to_reg, globals)?;
-            let from = map_ir_prim(*target_type)?;
+            let from = map_ir_prim(*target_type, layout)?;
             if matches!(val_op, Operand::Register(_)) {
                 let actual = operand_type(&val_op, register_types)?;
                 if actual != from {
@@ -2618,7 +2620,7 @@ fn convert_instruction<'a>(
                 )));
             }
             let dst = resolve_or_alloc(result, vreg_alloc, var_to_reg);
-            let ty = map_ir_prim(*ty)?;
+            let ty = map_ir_prim(*ty, layout)?;
             let ap = resolve_operand(ap, vreg_alloc, var_to_reg, globals)?;
             Ok(vec![Instruction::VaArg { ty, dst, ap }])
         }
@@ -2678,7 +2680,7 @@ fn convert_instruction<'a>(
             lhs,
             rhs,
         } => {
-            let ty = map_ir_vector(*element_type, *lanes)?;
+            let ty = map_ir_vector(*element_type, *lanes, layout)?;
             let unsigned = matches!(
                 element_type,
                 IRPrim::U8 | IRPrim::U16 | IRPrim::U32 | IRPrim::U64
@@ -2700,7 +2702,9 @@ fn convert_instruction<'a>(
                 let count = if per_lane {
                     resolve_operand(rhs, vreg_alloc, var_to_reg, globals)?
                 } else {
-                    uniform_shift_count(rhs, facts, vreg_alloc, var_to_reg, globals, &mut out)?
+                    uniform_shift_count(
+                        rhs, facts, vreg_alloc, var_to_reg, globals, &mut out, layout,
+                    )?
                 };
                 let dst = resolve_or_alloc(result, vreg_alloc, var_to_reg);
                 out.push(Instruction::VectorOp {
@@ -2738,9 +2742,9 @@ fn convert_instruction<'a>(
             lanes,
             value,
         } => {
-            let ty = map_ir_vector(*element_type, *lanes)?;
+            let ty = map_ir_vector(*element_type, *lanes, layout)?;
             let mut value = resolve_operand(value, vreg_alloc, var_to_reg, globals)?;
-            normalize_lowered_literal(&mut value, map_ir_prim(*element_type)?);
+            normalize_lowered_literal(&mut value, map_ir_prim(*element_type, layout)?);
             let dst = resolve_or_alloc(result, vreg_alloc, var_to_reg);
             Ok(vec![Instruction::VectorOp {
                 op: VectorOp::VSplat,
@@ -2756,7 +2760,7 @@ fn convert_instruction<'a>(
             vector,
             lane,
         } => {
-            let ty = map_ir_vector(*element_type, *lanes)?;
+            let ty = map_ir_vector(*element_type, *lanes, layout)?;
             let vector = resolve_operand(vector, vreg_alloc, var_to_reg, globals)?;
             let dst = resolve_or_alloc(result, vreg_alloc, var_to_reg);
             Ok(vec![Instruction::VectorOp {
@@ -2774,10 +2778,10 @@ fn convert_instruction<'a>(
             scalar,
             lane,
         } => {
-            let ty = map_ir_vector(*element_type, *lanes)?;
+            let ty = map_ir_vector(*element_type, *lanes, layout)?;
             let vector = resolve_operand(vector, vreg_alloc, var_to_reg, globals)?;
             let mut scalar = resolve_operand(scalar, vreg_alloc, var_to_reg, globals)?;
-            normalize_lowered_literal(&mut scalar, map_ir_prim(*element_type)?);
+            normalize_lowered_literal(&mut scalar, map_ir_prim(*element_type, layout)?);
             let dst = resolve_or_alloc(result, vreg_alloc, var_to_reg);
             Ok(vec![Instruction::VectorOp {
                 op: VectorOp::VInsertLane,
@@ -2794,8 +2798,8 @@ fn convert_instruction<'a>(
             rhs,
             mask,
         } => {
-            let ty = map_ir_vector(*element_type, *lanes)?;
-            let scalar_ty = map_ir_prim(*element_type)?;
+            let ty = map_ir_vector(*element_type, *lanes, layout)?;
+            let scalar_ty = map_ir_prim(*element_type, layout)?;
             let sources = [
                 resolve_operand(lhs, vreg_alloc, var_to_reg, globals)?,
                 resolve_operand(rhs, vreg_alloc, var_to_reg, globals)?,
@@ -2861,7 +2865,7 @@ fn convert_instruction<'a>(
             ordering,
         } => {
             let dst = resolve_or_alloc(result, vreg_alloc, var_to_reg);
-            let mir_ty = map_ir_type(ty)?;
+            let mir_ty = map_ir_type(ty, layout)?;
             let addr = ir_address_mode_to_mir(ptr, vreg_alloc, var_to_reg, globals)?;
             Ok(vec![Instruction::AtomicLoad {
                 ty: mir_ty,
@@ -2876,7 +2880,7 @@ fn convert_instruction<'a>(
             value,
             ordering,
         } => {
-            let mir_ty = map_ir_type(ty)?;
+            let mir_ty = map_ir_type(ty, layout)?;
             let addr = ir_address_mode_to_mir(ptr, vreg_alloc, var_to_reg, globals)?;
             let val_op = resolve_operand(value, vreg_alloc, var_to_reg, globals)?;
             Ok(vec![Instruction::AtomicStore {
@@ -2903,7 +2907,7 @@ fn convert_instruction<'a>(
                 IRAtomicBinOp::Exchange => AtomicBinOp::Exchange,
             };
             let dst = resolve_or_alloc(result, vreg_alloc, var_to_reg);
-            let mir_ty = map_ir_type(ty)?;
+            let mir_ty = map_ir_type(ty, layout)?;
             let addr = ir_address_mode_to_mir(ptr, vreg_alloc, var_to_reg, globals)?;
             let val_op = resolve_operand(value, vreg_alloc, var_to_reg, globals)?;
             Ok(vec![Instruction::AtomicBinary {
@@ -2939,7 +2943,7 @@ fn convert_instruction<'a>(
             let result = match result {
                 Some((name, ty)) => Some((
                     resolve_or_alloc(name, vreg_alloc, var_to_reg),
-                    map_ir_prim(*ty)?,
+                    map_ir_prim(*ty, layout)?,
                 )),
                 None => None,
             };
@@ -2965,7 +2969,7 @@ fn convert_instruction<'a>(
             failure_ordering,
         } => {
             let dst = resolve_or_alloc(result, vreg_alloc, var_to_reg);
-            let mir_ty = map_ir_type(ty)?;
+            let mir_ty = map_ir_type(ty, layout)?;
             let addr = ir_address_mode_to_mir(ptr, vreg_alloc, var_to_reg, globals)?;
             let expected = resolve_operand(expected, vreg_alloc, var_to_reg, globals)?;
             let desired = resolve_operand(desired, vreg_alloc, var_to_reg, globals)?;
@@ -3138,6 +3142,7 @@ fn uniform_shift_count<'a>(
     var_to_reg: &mut VarBindings<'a>,
     globals: &mut GlobalAddresses<'a>,
     out: &mut Vec<Instruction>,
+    layout: TargetDataLayout,
 ) -> Result<Operand, FromIRError> {
     let mut operand = resolve_operand(rhs, vreg_alloc, var_to_reg, globals)?;
     let i64_ty = MirType::Scalar(ScalarType::I64);
@@ -3148,7 +3153,7 @@ fn uniform_shift_count<'a>(
     let Some(IRType::Primitive(prim)) = facts.ir_types.get(name) else {
         return Err(FromIRError::UnsupportedInstruction);
     };
-    let from = map_ir_prim(*prim)?;
+    let from = map_ir_prim(*prim, layout)?;
     if from == i64_ty {
         return Ok(operand);
     }

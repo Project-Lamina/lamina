@@ -104,6 +104,19 @@ pub struct TargetDataLayout {
     pub endianness: Endianness,
     pub va_list: VaListAbi,
     pub float_aggregates: FloatAggregateAbi,
+    /// Which 16-bit float formats the target's hardware has. An architecture declares
+    /// neither by itself: both are named on the variant axis, because neither is
+    /// implied by the bare architecture name. See [`Target::data_layout`].
+    pub half_precision: HalfPrecision,
+}
+
+/// The 16-bit float formats a target has.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct HalfPrecision {
+    /// IEEE binary16, as `f16`.
+    pub f16: bool,
+    /// bfloat16, as `bf16`.
+    pub bf16: bool,
 }
 
 impl TargetDataLayout {
@@ -196,6 +209,10 @@ impl ArchSpec {
             endianness: self.endianness,
             va_list: self.va_list,
             float_aggregates: self.float_aggregates,
+            half_precision: HalfPrecision {
+                f16: false,
+                bf16: false,
+            },
         }
     }
 

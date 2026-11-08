@@ -201,6 +201,11 @@ pub fn compile(options: CompileOptions) -> Result<(), Box<dyn Error>> {
         default_target
     };
 
+    // `--cpu-level` lands on the codegen settings, and the data layout reads the
+    // target, so the choice has to reach the target too or a named extension would be
+    // invisible to lowering.
+    let target = target.refining_variant(options.mir_codegen_settings.arch_variant);
+
     check_default_cpu_level_runs_here(&options, target)?;
 
     let ir_mod = parse_module(&ir_source).map_err(|e| format!("IR parse failed: {e}"))?;
