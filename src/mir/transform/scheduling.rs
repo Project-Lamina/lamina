@@ -86,6 +86,15 @@ impl InstructionScheduling {
             &PressureTracker::new(&block.instructions, escaping),
         );
 
+        // A reorder that raises the peak is paid for at every iteration of the loop the
+        // block sits in, and the depth it buys back is free on an out-of-order core.
+        let original: Vec<usize> = (0..block.instructions.len()).collect();
+        let before = peak_pressure(&original, &block.instructions, escaping);
+        let after = peak_pressure(&scheduled_indices, &block.instructions, escaping);
+        if after.iter().zip(&before).any(|(new, old)| new > old) {
+            return false;
+        }
+
         // 4. Reorder Instructions
         if self.is_order_changed(&scheduled_indices) {
             let old_instructions = mem::take(&mut block.instructions);
@@ -342,6 +351,23 @@ impl InstructionScheduling {
                 | Instruction::VaCopy { .. }
         )
     }
+}
+
+/// The most values of each class live at once as `order` issues the block.
+fn peak_pressure(
+    order: &[usize],
+    instructions: &[Located],
+    escaping: &HashSet<Register>,
+) -> [usize; 3] {
+    let mut tracker = PressureTracker::new(instructions, escaping);
+    let mut peak = tracker.counts;
+    for &index in order {
+        tracker.issue(&instructions[index]);
+        for (slot, count) in tracker.counts.iter().enumerate() {
+            peak[slot] = peak[slot].max(*count);
+        }
+    }
+    peak
 }
 
 /// Registers no single block can be the last reader of: anything more than one block
@@ -635,6 +661,56 @@ mod tests {
             })
             .unwrap();
         assert!(read_pos < redefine_pos);
+    }
+
+    #[test]
+    fn interleaving_that_needs_another_register_is_refused() {
+        // Two chains that each hold two values at a time, read together at the end.
+        // Run one after the other they need three registers; interleaved they need four.
+        let ty = MirType::Scalar(ScalarType::I64);
+        let mut builder = FunctionBuilder::new("test").returns(ty).block("entry");
+        for base in [10u32, 20u32] {
+            builder = builder
+                .instr(Instruction::IntBinary {
+                    op: IntBinOp::And,
+                    ty,
+                    dst: VirtualReg::gpr(base + 1).into(),
+                    lhs: Operand::Register(VirtualReg::gpr(base).into()),
+                    rhs: Operand::Immediate(Immediate::I64(2147483647)),
+                })
+                .instr(Instruction::IntBinary {
+                    op: IntBinOp::AShr,
+                    ty,
+                    dst: VirtualReg::gpr(base + 2).into(),
+                    lhs: Operand::Register(VirtualReg::gpr(base + 1).into()),
+                    rhs: Operand::Immediate(Immediate::I64(7)),
+                })
+                .instr(Instruction::IntBinary {
+                    op: IntBinOp::Xor,
+                    ty,
+                    dst: VirtualReg::gpr(base + 3).into(),
+                    lhs: Operand::Register(VirtualReg::gpr(base + 1).into()),
+                    rhs: Operand::Register(VirtualReg::gpr(base + 2).into()),
+                });
+        }
+        let mut func = builder
+            .instr(Instruction::IntBinary {
+                op: IntBinOp::Mul,
+                ty,
+                dst: VirtualReg::gpr(30).into(),
+                lhs: Operand::Register(VirtualReg::gpr(13).into()),
+                rhs: Operand::Register(VirtualReg::gpr(23).into()),
+            })
+            .build();
+        let before = func.blocks[0].instructions.clone();
+
+        assert!(!InstructionScheduling.apply(&mut func).expect("scheduling failed"));
+
+        let after = &func.blocks[0].instructions;
+        assert_eq!(after.len(), before.len());
+        for (new, old) in after.iter().zip(&before) {
+            assert_eq!(format!("{:?}", new.instr), format!("{:?}", old.instr));
+        }
     }
 
     #[test]
