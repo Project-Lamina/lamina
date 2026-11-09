@@ -503,8 +503,8 @@ mod tests {
 
     use super::*;
     use crate::ir::{
-        AtomicBinOp, BinaryOp, CmpOp, GlobalInit, IRBuilder, InitElement, Instruction, Literal,
-        MemoryOrdering, Type, Value,
+        AtomicBinOp, BinaryOp, CmpOp, GlobalDeclaration, GlobalInit, IRBuilder, InitElement,
+        Instruction, Literal, MemoryOrdering, PrimitiveType, Type, Value,
         builder::{i32 as ir_i32, i64 as ir_i64},
     };
     use std::fs;
@@ -951,6 +951,30 @@ global $grid: [2 x [2 x i32]] = [[1, 2], [3, 4]]
         assert_eq!(uninit.name, "uninit_ptr");
         assert_eq!(uninit.ty, Type::Primitive(PrimitiveType::Ptr));
         assert!(uninit.initializer.is_none());
+    }
+
+    #[test]
+    fn builder_declared_globals_round_trip() {
+        let mut builder = IRBuilder::new();
+        builder
+            .declare_string_global("greeting", "hi there")
+            .declare_global(GlobalDeclaration {
+                name: "count",
+                ty: Type::Primitive(PrimitiveType::I32),
+                initializer: Some(GlobalInit::Value(Value::Constant(Literal::I32(7)))),
+                exported: true,
+                visibility: None,
+                weak: false,
+                align: Some(8),
+                thread_local: None,
+            })
+            .function("main", Type::Void)
+            .ret_void();
+        let module = builder.build();
+        let text = module.to_string();
+
+        let parsed = parse_module(&text).expect("builder output parses");
+        assert_eq!(parsed, module);
     }
 
     #[test]

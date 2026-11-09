@@ -10,6 +10,7 @@ pub(crate) mod checks;
 mod control_flow;
 mod conversions;
 mod functions;
+mod globals;
 mod io;
 mod memory;
 mod pointers;

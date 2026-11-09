@@ -7,7 +7,8 @@ mod tests {
         builder::{IRBuilder, values::*},
         function::FunctionAnnotation,
         instruction::{AllocType, BinaryOp, CmpOp, Instruction, UnaryOp},
-        types::{Literal, PrimitiveType, StructField, Type},
+        module::{GlobalDeclaration, GlobalInit, GlobalVisibility},
+        types::{Literal, PrimitiveType, StructField, Type, Value},
     };
 
     #[test]
@@ -1717,5 +1718,120 @@ mod tests {
             i32(2),
         );
         builder.build();
+    }
+
+    #[test]
+    fn test_declare_global_is_kept_in_module() {
+        let mut builder = IRBuilder::new();
+        builder
+            .declare_global(GlobalDeclaration {
+                name: "count",
+                ty: Type::Primitive(PrimitiveType::I32),
+                initializer: Some(GlobalInit::Value(Value::Constant(Literal::I32(7)))),
+                exported: true,
+                visibility: None,
+                weak: false,
+                align: Some(8),
+                thread_local: None,
+            })
+            .function("f", Type::Void)
+            .ret_void();
+
+        let module = builder.build();
+        let count = &module.global_declarations["count"];
+        assert!(count.exported);
+        assert_eq!(count.align, Some(8));
+        assert!(format!("{module}").contains("@align(8)\n@export global $count: i32 = 7\n"));
+    }
+
+    #[test]
+    fn test_declare_string_global_terminates_with_nul() {
+        let mut builder = IRBuilder::new();
+        builder
+            .declare_string_global("greeting", "hi")
+            .function("f", Type::Void)
+            .ret_void();
+
+        let module = builder.build();
+        let greeting = &module.global_declarations["greeting"];
+        assert_eq!(
+            greeting.ty,
+            Type::Array {
+                element_type: Box::new(Type::Primitive(PrimitiveType::I8)),
+                size: 3,
+            }
+        );
+        assert_eq!(
+            greeting.initializer,
+            Some(GlobalInit::Value(Value::Constant(Literal::String("hi"))))
+        );
+        assert!(format!("{module}").contains("global $greeting: [3 x i8] = \"hi\"\n"));
+    }
+
+    #[test]
+    #[should_panic(expected = "global '$count' is already declared")]
+    fn test_duplicate_global_panics() {
+        let mut builder = IRBuilder::new();
+        builder
+            .declare_string_global("count", "a")
+            .declare_string_global("count", "b");
+    }
+
+    #[test]
+    #[should_panic(expected = "@export and @internal cannot be used together")]
+    fn test_exported_internal_global_panics() {
+        let mut builder = IRBuilder::new();
+        builder.declare_global(GlobalDeclaration {
+            name: "secret",
+            ty: Type::Primitive(PrimitiveType::I64),
+            initializer: None,
+            exported: true,
+            visibility: Some(GlobalVisibility::Internal),
+            weak: false,
+            align: None,
+            thread_local: None,
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "alignment must be a power of two")]
+    fn test_global_alignment_must_be_power_of_two() {
+        let mut builder = IRBuilder::new();
+        builder.declare_global(GlobalDeclaration {
+            name: "buf",
+            ty: Type::Primitive(PrimitiveType::I64),
+            initializer: None,
+            exported: false,
+            visibility: None,
+            weak: false,
+            align: Some(3),
+            thread_local: None,
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "takes a string literal only in an [N x i8] or [N x bool] array")]
+    fn test_string_initializer_needs_byte_array() {
+        let mut builder = IRBuilder::new();
+        builder.declare_global(GlobalDeclaration {
+            name: "words",
+            ty: Type::Array {
+                element_type: Box::new(Type::Primitive(PrimitiveType::I32)),
+                size: 4,
+            },
+            initializer: Some(GlobalInit::Value(Value::Constant(Literal::String("abc")))),
+            exported: false,
+            visibility: None,
+            weak: false,
+            align: None,
+            thread_local: None,
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "contains '\"' or '\\'")]
+    fn test_string_global_rejects_quote() {
+        let mut builder = IRBuilder::new();
+        builder.declare_string_global("quoted", "say \"hi\"");
     }
 }
