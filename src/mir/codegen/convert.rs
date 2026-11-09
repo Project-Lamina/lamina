@@ -768,7 +768,8 @@ impl Slots {
     }
 }
 
-/// Bytes for an array global written as an element list. Elements left out are zero.
+/// Bytes for an array or struct global written as an element list. Elements left out
+/// are zero, and an element that is itself a list fills its slot the same way.
 fn element_list_bytes(
     name: &str,
     ty: &IRType<'_>,
@@ -825,6 +826,29 @@ fn element_list_bytes(
         let (at, width) = slots.get(index).ok_or(FromIRError::UnsupportedType)?;
         let literal = match element {
             InitElement::Literal(literal) => literal,
+            InitElement::List(nested) => {
+                let slot = match ty {
+                    IRType::Array { element_type, .. } => element_type.as_ref(),
+                    IRType::Struct { fields, .. } => {
+                        &fields.get(index).ok_or(FromIRError::UnsupportedType)?.ty
+                    }
+                    _ => return Err(FromIRError::UnsupportedType),
+                };
+                let (inner, inner_relocations) =
+                    element_list_bytes(name, slot, width, nested, layout, endianness)?;
+                if at + inner.len() > bytes.len() {
+                    return Err(FromIRError::UnsupportedGlobal(format!(
+                        "@{name} element {index} is {} bytes, more than the {width} its slot takes",
+                        inner.len()
+                    )));
+                }
+                bytes[at..at + inner.len()].copy_from_slice(&inner);
+                for mut relocation in inner_relocations {
+                    relocation.offset += at;
+                    relocations.push(relocation);
+                }
+                continue;
+            }
             InitElement::Symbol(symbol) => {
                 if width != layout.pointer_width.bytes() {
                     return Err(FromIRError::UnsupportedGlobal(format!(
