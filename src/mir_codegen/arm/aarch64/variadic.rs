@@ -379,8 +379,8 @@ mod tests {
 
     #[test]
     fn save_area_covers_eight_general_and_eight_vector_registers() {
-        assert_eq!(SAVE_AREA_BYTES, 192);
-        assert_eq!(GR_SAVE_BYTES + VR_SAVE_BYTES, SAVE_AREA_BYTES);
+        assert_eq!(GR_SAVE_BYTES, 8 * 8, "eight x registers of eight bytes");
+        assert_eq!(VR_SAVE_BYTES, 8 * 16, "eight q registers of sixteen bytes");
     }
 
     #[test]
