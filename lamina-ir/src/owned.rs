@@ -143,6 +143,32 @@ struct OwnedFunction {
     entry_block: String,
 }
 
+/// One operand of an [`OwnedIRBuilder::inline_asm`] instruction. `$n` in the template
+/// names the operand at index `n`.
+#[derive(Debug, Clone)]
+pub enum OwnedAsmOperand {
+    /// The value is placed in `location` before the template runs.
+    In { location: String, value: OwnedValue },
+    /// The template writes `location`, and the result is read from it.
+    Out { location: String },
+}
+
+/// Escapes a template for the IR text, where the parser keeps the escapes `\n`, `\t`,
+/// `\\` and `\"` and the backend decodes them.
+fn escape_asm_template(template: &str) -> String {
+    let mut out = String::with_capacity(template.len());
+    for c in template.chars() {
+        match c {
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            other => out.push(other),
+        }
+    }
+    out
+}
+
 // ---------------------------------------------------------------------------
 // OwnedIRBuilder
 // ---------------------------------------------------------------------------
@@ -313,7 +339,7 @@ impl OwnedIRBuilder {
     fn push(&mut self, text: impl AsRef<str>) {
         let text = text.as_ref();
         assert!(
-            !text.contains('"'),
+            !text.contains('"') || text.starts_with("asm.") || text.contains("= asm."),
             "string literals only initialize globals, not instruction operands: {text}"
         );
         let fi = self.open_body_index();
@@ -1091,6 +1117,81 @@ impl OwnedIRBuilder {
         self
     }
 
+    // -----------------------------------------------------------------------
+    // Inline assembly
+    // -----------------------------------------------------------------------
+
+    /// Appends an inline assembly instruction.
+    ///
+    /// `template` is written as the backend will see it: `$n` names the n-th operand and
+    /// `$$` is a literal dollar. It is escaped for the IR text here, so a newline in
+    /// `template` reaches the assembler as a newline.
+    ///
+    /// # Panics
+    /// Panics if `result` is given without exactly one `Out` operand, if a result is
+    /// bound to a type that is neither an integer nor `ptr`, or if an `Out` operand
+    /// appears without a result.
+    pub fn inline_asm(
+        &mut self,
+        result: Option<(&str, PrimitiveType)>,
+        template: &str,
+        operands: &[OwnedAsmOperand],
+        clobbers: &[String],
+    ) -> &mut Self {
+        let outputs = operands
+            .iter()
+            .filter(|operand| matches!(operand, OwnedAsmOperand::Out { .. }))
+            .count();
+        match result {
+            Some((_, ty)) => {
+                assert!(
+                    matches!(
+                        ty,
+                        PrimitiveType::I8
+                            | PrimitiveType::I16
+                            | PrimitiveType::I32
+                            | PrimitiveType::I64
+                            | PrimitiveType::U8
+                            | PrimitiveType::U16
+                            | PrimitiveType::U32
+                            | PrimitiveType::U64
+                            | PrimitiveType::Ptr
+                    ),
+                    "an asm result must be an integer or ptr type, found {}",
+                    ty.as_str()
+                );
+                assert_eq!(
+                    outputs, 1,
+                    "an asm result is read from its one out(...) operand, found {outputs}"
+                );
+            }
+            None => assert_eq!(
+                outputs, 0,
+                "asm.void takes no out(...) operand, found {outputs}; registers the template writes belong in clobber(...)"
+            ),
+        }
+        let head = match result {
+            Some((name, ty)) => format!("%{name} = asm.{}", ty.as_str()),
+            None => "asm.void".to_string(),
+        };
+        let mut t = format!("{head} \"{}\"", escape_asm_template(template));
+        for operand in operands {
+            match operand {
+                OwnedAsmOperand::In { location, value } => {
+                    t.push_str(&format!(", in({location}) {value}"));
+                }
+                OwnedAsmOperand::Out { location } => {
+                    t.push_str(&format!(", out({location})"));
+                }
+            }
+        }
+        if !clobbers.is_empty() {
+            t.push_str(&format!(", clobber({})", clobbers.join(", ")));
+        }
+        self.push(t);
+        self
+    }
+
     /// Appends a multi-way switch instruction.
     ///
     /// `cases` is a slice of `(integer_value, target_label)` pairs.
@@ -1254,6 +1355,52 @@ mod tests {
         assert!(ir.contains("fn @add(i64 %a, i64 %b) -> i64"), "got: {}", ir);
         assert!(ir.contains("%result = add.i64 %a, %b"), "got: {}", ir);
         assert!(ir.contains("ret.i64 %result"), "got: {}", ir);
+    }
+
+    #[test]
+    fn inline_asm_text_escapes_its_template_and_orders_its_operands() {
+        let mut builder = OwnedIRBuilder::new();
+        builder
+            .function("syscall1", OwnedType::Primitive(PrimitiveType::I64))
+            .inline_asm(
+                Some(("ret", PrimitiveType::I64)),
+                "syscall\n\tnop",
+                &[
+                    OwnedAsmOperand::Out {
+                        location: "rax".to_string(),
+                    },
+                    OwnedAsmOperand::In {
+                        location: "rdi".to_string(),
+                        value: OwnedValue::Variable("arg".to_string()),
+                    },
+                ],
+                &["rcx".to_string(), "memory".to_string()],
+            )
+            .ret(
+                &OwnedType::Primitive(PrimitiveType::I64),
+                &OwnedValue::Variable("ret".to_string()),
+            );
+        let text = builder.build_ir_text();
+        assert!(
+            text.contains(
+                r#"%ret = asm.i64 "syscall\n\tnop", out(rax), in(rdi) %arg, clobber(rcx, memory)"#
+            ),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn inline_asm_without_result_takes_no_output() {
+        let mut builder = OwnedIRBuilder::new();
+        builder
+            .function("halt", OwnedType::Void)
+            .inline_asm(None, "hlt", &[], &[])
+            .ret_void();
+        assert!(
+            builder.build_ir_text().contains(r#"asm.void "hlt""#),
+            "{}",
+            builder.build_ir_text()
+        );
     }
 
     #[test]
