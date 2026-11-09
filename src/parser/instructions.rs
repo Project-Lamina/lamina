@@ -541,6 +541,7 @@ fn check_asm_operands(
     }
 
     let mut used: Vec<&str> = Vec::new();
+    let mut written: Vec<&str> = Vec::new();
     for operand in operands {
         let location = match operand {
             AsmOperand::In { location, .. } | AsmOperand::Out { location } => *location,
@@ -559,12 +560,24 @@ fn check_asm_operands(
             )));
         }
         let canonical = asm_canonical(location);
-        if used.contains(&canonical) {
+        // An input and an output may share a register: the input is placed there, the
+        // template overwrites it, and the result is read back from it. Two operands on
+        // the same side may not.
+        let same_direction = match operand {
+            AsmOperand::Out { .. } => &mut written,
+            AsmOperand::In { .. } => &mut used,
+        };
+        if same_direction.contains(&canonical) {
             return Err(state.error(format!(
-                "register '{location}' is used by two asm operands\n  Hint: Each operand needs its own register"
+                "register '{location}' is used by two asm operands\n  Hint: Each operand needs its own register, except that one in(...) may share with one out(...)"
             )));
         }
-        used.push(canonical);
+        same_direction.push(canonical);
+    }
+    for register in written {
+        if !used.contains(&register) {
+            used.push(register);
+        }
     }
 
     for &clobber in clobbers {

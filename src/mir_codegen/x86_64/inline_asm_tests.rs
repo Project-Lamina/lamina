@@ -85,3 +85,12 @@ fn asm_result_is_read_from_its_output_register() {
     );
     assert!(asm.contains("movq $42, %rcx"), "{asm}");
 }
+
+#[test]
+fn an_input_and_an_output_may_share_a_register() {
+    let asm = linux(
+        "fn @f(i64 %a) -> i64 {\nentry:\n    %v = asm.i64 \"addq $$1, $0\", out(rax), in(rax) %a\n    ret.i64 %v\n}\n",
+    );
+    let template = asm.find("addq $1, %rax").expect(&asm);
+    assert!(asm[..template].contains(", %rax"), "{asm}");
+}

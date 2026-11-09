@@ -211,7 +211,7 @@ mod tests {
 
     #[test]
     fn i686_a_narrow_spelling_binds_the_whole_register() {
-        assert!(bind(&[input("al", 0), out("eax")], &[]).is_err());
+        assert!(bind(&[input("al", 0), input("eax", 1)], &[]).is_err());
         assert!(bind(&[input("cx", 0)], &["ecx".to_owned()]).is_ok());
     }
 
@@ -241,8 +241,8 @@ mod tests {
     }
 
     #[test]
-    fn i686_inline_asm_refuses_one_register_for_two_operands() {
-        assert!(bind(&[input("ecx", 0), out("cl")], &[]).is_err());
+    fn i686_inline_asm_refuses_one_register_for_two_inputs() {
+        assert!(bind(&[input("ecx", 0), input("cl", 1)], &[]).is_err());
     }
 
     #[test]

@@ -62,9 +62,15 @@ impl RegisterFacts {
         clobbers: &[String],
     ) -> Result<Vec<Binding>, LaminaError> {
         let mut taken: Vec<&'static str> = Vec::new();
+        let mut written: Vec<&'static str> = Vec::new();
+        let mut read: Vec<&'static str> = Vec::new();
         let mut bindings: Vec<Option<Binding>> = Vec::with_capacity(operands.len());
         for operand in operands {
-            bindings.push(self.bind_named(location(operand), &mut taken)?);
+            let same_direction = match operand {
+                AsmOperand::Output { .. } => &mut written,
+                AsmOperand::Input { .. } => &mut read,
+            };
+            bindings.push(self.bind_named(location(operand), same_direction, &mut taken)?);
         }
         for clobber in clobbers {
             if is_pseudo_clobber(clobber) {
@@ -80,21 +86,29 @@ impl RegisterFacts {
     }
 
     /// `None` for a `reg`-class operand, which is bound once the clobbers are known.
+    ///
+    /// `same_direction` holds the registers the operands on this side already occupy. An
+    /// input and an output may share a register, which is how a read-write operand is
+    /// written; two inputs or two outputs may not.
     fn bind_named(
         &self,
         name: &str,
+        same_direction: &mut Vec<&'static str>,
         taken: &mut Vec<&'static str>,
     ) -> Result<Option<Binding>, LaminaError> {
         if name == GPR_CLASS {
             return Ok(None);
         }
         let phys = (self.operand)(name)?;
-        if taken.contains(&phys) {
+        if same_direction.contains(&phys) {
             return Err(LaminaError::ValidationError(format!(
                 "register '{name}' is used by two inline asm operands"
             )));
         }
-        taken.push(phys);
+        same_direction.push(phys);
+        if !taken.contains(&phys) {
+            taken.push(phys);
+        }
         Ok(Some(Binding {
             phys,
             spelled: (self.spell)(name),
@@ -299,8 +313,24 @@ mod tests {
     }
 
     #[test]
-    fn two_operands_may_not_name_one_register() {
-        assert!(FACTS.bind(&[input("a"), out("a")], &[]).is_err());
+    fn two_operands_on_one_side_may_not_name_one_register() {
+        assert!(FACTS.bind(&[input("a"), input("a")], &[]).is_err());
+    }
+
+    #[test]
+    fn an_input_and_an_output_may_share_a_register() {
+        assert_eq!(
+            spellings(&[out("a"), input("a")], &[]),
+            vec!["%a".to_owned(), "%a".to_owned()]
+        );
+    }
+
+    #[test]
+    fn a_shared_register_leaves_the_pool_one_fewer() {
+        assert_eq!(
+            spellings(&[out("a"), input("a"), input(GPR_CLASS)], &[]),
+            vec!["%a".to_owned(), "%a".to_owned(), "%b".to_owned()]
+        );
     }
 
     #[test]

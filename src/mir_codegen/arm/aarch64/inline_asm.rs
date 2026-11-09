@@ -284,8 +284,8 @@ mod tests {
     }
 
     #[test]
-    fn aarch64_inline_asm_refuses_one_register_for_two_operands() {
-        assert!(bind(&[input("x2", 0), out("w2")], &[]).is_err());
+    fn aarch64_inline_asm_refuses_one_register_for_two_inputs() {
+        assert!(bind(&[input("x2", 0), input("w2", 1)], &[]).is_err());
     }
 
     #[test]

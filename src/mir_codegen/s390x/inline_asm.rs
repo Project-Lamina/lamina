@@ -217,8 +217,8 @@ mod tests {
     }
 
     #[test]
-    fn s390x_inline_asm_refuses_one_register_for_two_operands() {
-        assert!(bind(&[input("r2", 0), out("r2")], &[]).is_err());
+    fn s390x_inline_asm_refuses_one_register_for_two_inputs() {
+        assert!(bind(&[input("r2", 0), input("r2", 1)], &[]).is_err());
     }
 
     #[test]
