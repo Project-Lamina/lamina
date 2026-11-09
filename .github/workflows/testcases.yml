@@ -60,6 +60,11 @@ jobs:
       # A test that cannot find its tool skips and still reports success, so on
       # Linux a missing tool is a failure instead. The other two runners keep
       # skipping, since they do not carry the cross toolchains.
+      # Tests that run the compiler as a program need it on disk. With no
+      # integration test target left, `cargo test` builds neither bin.
+      - name: Build binaries
+        run: cargo build --bins
+
       - name: Test
         run: cargo test --workspace --verbose
         env:
@@ -224,6 +229,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu
           sudo apt-get install -y qemu-user-static || sudo apt-get install -y qemu-user || sudo apt-get install -y qemu-user-binfmt
+      - name: Build binaries
+        run: cargo build --bins
+
       - name: Cross-toolchain ABI agreement
         env:
           LAMINA_REQUIRE_CROSS_TOOLS: '1'
