@@ -10,95 +10,78 @@ fn rejected(line: &str) -> String {
 }
 
 #[test]
-fn template_operand_index_must_be_covered_by_operands() {
-    let message = rejected("%v = asm.i64 \"movq $1, $0\", out(rax)");
-    assert!(message.contains("uses $1"), "{message}");
+fn a_template_placeholder_must_name_an_operand() {
+    for (line, fragment) in [
+        ("%v = asm.i64 \"movq $1, $0\", out(rax)", "uses $1"),
+        ("%v = asm.i64 \"movq $x, $0\", out(rax)", "stray '$'"),
+    ] {
+        let message = rejected(line);
+        assert!(message.contains(fragment), "{line}\n{message}");
+    }
 }
 
 #[test]
-fn stray_dollar_in_template_is_rejected() {
-    let message = rejected("%v = asm.i64 \"movq $x, $0\", out(rax)");
-    assert!(message.contains("stray '$'"), "{message}");
+fn a_register_cannot_be_both_an_operand_and_a_clobber() {
+    for line in [
+        "asm.void \"nop\", in(rcx) %a, clobber(rcx)",
+        // The two spellings name one register, so the width must not hide the clash.
+        "asm.void \"nop\", in(rcx) %a, clobber(ecx)",
+    ] {
+        let message = rejected(line);
+        assert!(
+            message.contains("both an asm operand and a clobber"),
+            "{line}\n{message}"
+        );
+    }
 }
 
 #[test]
-fn operand_and_clobber_on_one_register_is_rejected() {
-    let message = rejected("asm.void \"nop\", in(rcx) %a, clobber(rcx)");
-    assert!(
-        message.contains("both an asm operand and a clobber"),
-        "{message}"
-    );
+fn the_stack_and_frame_pointers_are_off_limits() {
+    for (line, fragment) in [
+        (
+            "asm.void \"nop\", clobber(rsp)",
+            "cannot clobber the stack or frame pointer",
+        ),
+        (
+            "asm.void \"nop\", clobber(rbp)",
+            "cannot clobber the stack or frame pointer",
+        ),
+        ("%v = asm.i64 \"nop\", out(rsp)", "as an asm operand"),
+    ] {
+        let message = rejected(line);
+        assert!(message.contains(fragment), "{line}\n{message}");
+    }
 }
 
 #[test]
-fn operand_and_clobber_match_across_register_widths() {
-    let message = rejected("asm.void \"nop\", in(rcx) %a, clobber(ecx)");
-    assert!(
-        message.contains("both an asm operand and a clobber"),
-        "{message}"
-    );
+fn a_result_needs_exactly_one_out_operand_of_integer_or_pointer_type() {
+    for (line, fragment) in [
+        ("asm.void \"nop\", out(rax)", "takes no out"),
+        ("%v = asm.void \"nop\"", "cannot be bound"),
+        ("%v = asm.f64 \"nop\", out(rax)", "integer or ptr"),
+        ("%v = asm.i64 \"nop\", in(rcx) %a", "found 0"),
+        ("%v = asm.i64 \"nop\", out(rax), out(rcx)", "found 2"),
+    ] {
+        let message = rejected(line);
+        assert!(message.contains(fragment), "{line}\n{message}");
+    }
 }
 
 #[test]
-fn clobbering_the_stack_pointer_is_rejected() {
-    let message = rejected("asm.void \"nop\", clobber(rsp)");
-    assert!(
-        message.contains("cannot clobber the stack or frame pointer"),
-        "{message}"
-    );
-}
-
-#[test]
-fn clobbering_the_frame_pointer_is_rejected() {
-    let message = rejected("asm.void \"nop\", clobber(rbp)");
-    assert!(
-        message.contains("cannot clobber the stack or frame pointer"),
-        "{message}"
-    );
-}
-
-#[test]
-fn frame_pointer_as_operand_is_rejected() {
-    let message = rejected("%v = asm.i64 \"nop\", out(rsp)");
-    assert!(message.contains("as an asm operand"), "{message}");
-}
-
-#[test]
-fn void_asm_takes_no_out_operand() {
-    let message = rejected("asm.void \"nop\", out(rax)");
-    assert!(message.contains("takes no out"), "{message}");
-}
-
-#[test]
-fn result_asm_needs_exactly_one_out_operand() {
-    let missing = rejected("%v = asm.i64 \"nop\", in(rcx) %a");
-    assert!(missing.contains("found 0"), "{missing}");
-    let two = rejected("%v = asm.i64 \"nop\", out(rax), out(rcx)");
-    assert!(two.contains("found 2"), "{two}");
-}
-
-#[test]
-fn void_asm_cannot_bind_a_result() {
-    let message = rejected("%v = asm.void \"nop\"");
-    assert!(message.contains("cannot be bound"), "{message}");
-}
-
-#[test]
-fn float_asm_result_is_rejected() {
-    let message = rejected("%v = asm.f64 \"nop\", out(rax)");
-    assert!(message.contains("integer or ptr"), "{message}");
-}
-
-#[test]
-fn operand_location_used_twice_is_rejected() {
-    let message = rejected("%v = asm.i64 \"nop\", in(rcx) %a, in(ecx) %a, out(rax)");
-    assert!(message.contains("used by two asm operands"), "{message}");
-}
-
-#[test]
-fn literal_asm_input_is_rejected() {
-    let message = rejected("%v = asm.i64 \"nop\", in(rcx) 5, out(rax)");
-    assert!(message.contains("must be values"), "{message}");
+fn an_input_is_a_value_at_a_location_nothing_else_uses() {
+    for (line, fragment) in [
+        (
+            "%v = asm.i64 \"nop\", in(rcx) %a, in(ecx) %a, out(rax)",
+            "used by two asm operands",
+        ),
+        (
+            "%v = asm.i64 \"nop\", in(rcx) 5, out(rax)",
+            "must be values",
+        ),
+    ] {
+        let message = rejected(line);
+        assert!(message.contains(fragment), "{line}\n{message}");
+    }
 }
 
 #[test]
