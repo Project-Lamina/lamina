@@ -1,5 +1,3 @@
-//! Shape rules shared by the IR builders. Each check fails with the rule the text parser enforces.
-
 use crate::{
     builder::{BuildError, BuildErrorKind, require},
     types::PrimitiveType,
@@ -53,7 +51,6 @@ pub(crate) fn integer_signedness(ty: PrimitiveType) -> Option<bool> {
     }
 }
 
-/// Panics with the error when a check failed, for the owned builder, which has no fallible mode.
 pub(crate) fn enforce(check: Result<(), BuildError>) {
     if let Err(error) = check {
         panic!("{error}");

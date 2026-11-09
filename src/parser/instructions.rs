@@ -560,9 +560,7 @@ fn check_asm_operands(
             )));
         }
         let canonical = asm_canonical(location);
-        // An input and an output may share a register: the input is placed there, the
-        // template overwrites it, and the result is read back from it. Two operands on
-        // the same side may not.
+        // An input and an output may share a register; two on one side may not.
         let same_direction = match operand {
             AsmOperand::Out { .. } => &mut written,
             AsmOperand::In { .. } => &mut used,

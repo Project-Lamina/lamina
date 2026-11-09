@@ -143,18 +143,13 @@ struct OwnedFunction {
     entry_block: String,
 }
 
-/// One operand of an [`OwnedIRBuilder::inline_asm`] instruction. `$n` in the template
-/// names the operand at index `n`.
+/// Input or output operand of an inline assembly instruction.
 #[derive(Debug, Clone)]
 pub enum OwnedAsmOperand {
-    /// The value is placed in `location` before the template runs.
     In { location: String, value: OwnedValue },
-    /// The template writes `location`, and the result is read from it.
     Out { location: String },
 }
 
-/// Escapes a template for the IR text, where the parser keeps the escapes `\n`, `\t`,
-/// `\\` and `\"` and the backend decodes them.
 fn escape_asm_template(template: &str) -> String {
     let mut out = String::with_capacity(template.len());
     for c in template.chars() {
@@ -1117,20 +1112,10 @@ impl OwnedIRBuilder {
         self
     }
 
-    // -----------------------------------------------------------------------
-    // Inline assembly
-    // -----------------------------------------------------------------------
-
     /// Appends an inline assembly instruction.
     ///
-    /// `template` is written as the backend will see it: `$n` names the n-th operand and
-    /// `$$` is a literal dollar. It is escaped for the IR text here, so a newline in
-    /// `template` reaches the assembler as a newline.
-    ///
     /// # Panics
-    /// Panics if `result` is given without exactly one `Out` operand, if a result is
-    /// bound to a type that is neither an integer nor `ptr`, or if an `Out` operand
-    /// appears without a result.
+    /// Panics when the result and `Out` operands do not match, or the result type is not an integer or `ptr`.
     pub fn inline_asm(
         &mut self,
         result: Option<(&str, PrimitiveType)>,

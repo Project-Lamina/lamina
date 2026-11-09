@@ -42,11 +42,6 @@ pub use values::*;
 /// having to manually build instruction objects. It provides methods for all IR operations
 /// and maintains the context of the current function and basic block.
 ///
-/// Every method emits IR that the text parser accepts. Misuse that would produce IR the
-/// parser rejects, or a different meaning than requested, panics with the replacement to use.
-/// A builder made with `IRBuilder::new_fallible()` records the first such misuse instead,
-/// ignores the calls after it, and reports the error from `try_build()`.
-///
 /// ## Basic Usage Pattern
 ///
 /// 1. Create a builder with `IRBuilder::new()`
@@ -81,8 +76,6 @@ pub(super) struct PendingBlock<'a> {
 }
 
 /// Misuse of the builder, or a module it cannot finish.
-///
-/// Its message is the text the panicking methods panic with.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BuildError {
     kind: BuildErrorKind,
@@ -97,12 +90,10 @@ impl BuildError {
         }
     }
 
-    /// The category of the misuse.
     pub fn kind(&self) -> BuildErrorKind {
         self.kind
     }
 
-    /// The description of the misuse, without the category.
     pub fn message(&self) -> &str {
         &self.message
     }
@@ -116,44 +107,30 @@ impl fmt::Display for BuildError {
 
 impl Error for BuildError {}
 
-/// The category of a `BuildError`.
+/// Category of builder misuse.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum BuildErrorKind {
-    /// An instruction, block or annotation was added before any function was opened.
     NoOpenFunction,
-    /// An instruction was added while no block is open.
     NoOpenBlock,
-    /// A body was added to an external function.
     ExternFunctionBody,
-    /// An instruction was added after its block already ends with a terminator.
     AfterTerminator,
-    /// A function with the same name is already defined.
     DuplicateFunction,
-    /// A block with the same label is already defined in the function.
     DuplicateBlock,
-    /// A named type with the same name is already declared.
     DuplicateType,
-    /// A global with the same name is already declared.
     DuplicateGlobal,
-    /// The same annotation is applied to a function twice.
     DuplicateAnnotation,
-    /// The annotation has no text form in Lamina IR.
+    /// Annotation with no text form in Lamina IR.
     InvalidAnnotation,
-    /// Two annotations applied to one function cannot be used together.
     ConflictingAnnotation,
-    /// A global's linkage or alignment is malformed, or its string initializer does not fit
-    /// its type.
+    /// Malformed global linkage, alignment, or string initializer.
     InvalidGlobal,
-    /// A string literal would appear in an instruction, which only global initializers may hold.
+    /// String literal outside a global initializer.
     StringLiteralOperand,
-    /// A type does not satisfy the rule of the instruction it is used in.
     InvalidType,
-    /// A call's argument count does not fit its declared variadic split.
+    /// Argument count does not match the variadic split.
     InvalidArgument,
-    /// A block does not end with a terminator, found by `build()` or `try_build()`.
     UnterminatedBlock,
-    /// The entry block names a label the function never defines, found by `build()` or `try_build()`.
     UndefinedEntryBlock,
 }
 
@@ -166,7 +143,7 @@ impl Default for IRBuilder<'_> {
 impl<'a> IRBuilder<'a> {
     /// Creates a new empty IR builder
     ///
-    /// Initializes a builder with no functions or blocks. Misuse panics.
+    /// Initializes a builder with no functions or blocks.
     pub fn new() -> Self {
         IRBuilder {
             module: Module::new(),
@@ -179,10 +156,7 @@ impl<'a> IRBuilder<'a> {
         }
     }
 
-    /// Creates a new empty IR builder that records misuse instead of panicking
-    ///
-    /// The first misuse is kept, and every later call does nothing. `try_build()` returns it.
-    /// `build()` on such a builder panics with the recorded message.
+    /// Creates an empty builder that records misuse for `try_build()` instead of panicking.
     pub fn new_fallible() -> Self {
         IRBuilder {
             fallible: true,
@@ -202,7 +176,6 @@ impl<'a> IRBuilder<'a> {
         var
     }
 
-    /// Runs one step that may fail, and does nothing once a fallible builder has recorded an error.
     pub(super) fn step(
         &mut self,
         step: impl FnOnce(&mut Self) -> Result<(), BuildError>,
@@ -215,7 +188,6 @@ impl<'a> IRBuilder<'a> {
         self
     }
 
-    /// Panics with the error, or records it when the builder is fallible and has no error yet.
     fn fail(&mut self, error: BuildError) {
         if !self.fallible {
             panic!("{error}");
@@ -265,7 +237,6 @@ impl<'a> IRBuilder<'a> {
         Ok(())
     }
 
-    /// Returns the function currently being built, or fails when none is open.
     pub(super) fn open_function(&mut self) -> Result<&mut PendingFunction<'a>, BuildError> {
         let index = self.current_function.ok_or_else(|| {
             BuildError::new(
@@ -276,7 +247,6 @@ impl<'a> IRBuilder<'a> {
         Ok(&mut self.functions[index])
     }
 
-    /// Returns the function currently being built, or fails when none is open or it is extern.
     pub(super) fn open_body(&mut self) -> Result<&mut PendingFunction<'a>, BuildError> {
         let function = self.open_function()?;
         require(
@@ -303,15 +273,12 @@ impl<'a> IRBuilder<'a> {
     /// Returns: A Module object containing all defined functions and blocks
     ///
     /// Panics when a function's entry block was set to a label that was never defined, or
-    /// when a block does not end with a terminator. On a fallible builder, panics with the
-    /// first recorded misuse.
+    /// when a block does not end with a terminator.
     pub fn build(&mut self) -> Module<'a> {
         self.try_build().unwrap_or_else(|error| panic!("{error}"))
     }
 
-    /// Finalizes the module, or returns the first misuse instead of panicking
-    ///
-    /// Returns the misuse a fallible builder recorded, or the error `build()` would panic with.
+    /// Finalizes the module, returning misuse as an error instead of panicking.
     pub fn try_build(&mut self) -> Result<Module<'a>, BuildError> {
         if let Some(error) = &self.error {
             return Err(error.clone());
@@ -375,7 +342,6 @@ impl<'a> IRBuilder<'a> {
     }
 }
 
-/// Succeeds when `condition` holds, and otherwise fails with `kind` and the message.
 pub(super) fn require(
     condition: bool,
     kind: BuildErrorKind,

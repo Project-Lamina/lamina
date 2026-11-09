@@ -1,8 +1,3 @@
-//! Global variable declarations for IR builder.
-//!
-//! Globals belong to the module rather than to the function being built. Each declaration
-//! is checked against the rules the text parser applies to a global.
-
 use crate::{
     builder::{BuildErrorKind, IRBuilder, require},
     module::{GlobalDeclaration, GlobalInit, GlobalVisibility},
@@ -10,11 +5,10 @@ use crate::{
 };
 
 impl<'a> IRBuilder<'a> {
-    /// Declares a module-level global variable (`global $name: ty = init`).
+    /// Declares a module-level global variable.
     ///
-    /// Panics when the name is already declared, when `@export` or `@weak` is combined with
-    /// `@internal` or `@private`, when `align` is not a power of two, or when a string
-    /// initializer does not fit a byte array of `i8` or `bool`.
+    /// # Panics
+    /// Panics on a duplicate name or a malformed declaration.
     pub fn declare_global(&mut self, declaration: GlobalDeclaration<'a>) -> &mut Self {
         self.step(|builder| {
             let name = declaration.name;
@@ -75,10 +69,10 @@ impl<'a> IRBuilder<'a> {
         })
     }
 
-    /// Declares a byte array holding `text` and its NUL terminator (`global $name: [N x i8] = "text"`).
+    /// Declares a NUL-terminated byte array holding `text`.
     ///
-    /// `N` is the length of `text` in bytes plus one, the terminator the text IR leaves implicit.
-    /// Panics under the same conditions as `declare_global`.
+    /// # Panics
+    /// Panics when the name is already declared.
     pub fn declare_string_global(&mut self, name: &'a str, text: &'a str) -> &mut Self {
         self.declare_global(GlobalDeclaration {
             name,
