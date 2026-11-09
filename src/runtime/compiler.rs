@@ -230,9 +230,6 @@ mod tests {
         let mut compiler = make_compiler();
         let module = Module::new("test");
         let result = compiler.compile(&module, None);
-        assert!(matches!(
-            result,
-            Err(crate::error::LaminaError::ValidationError(_))
-        ));
+        assert!(matches!(result, Err(LaminaError::ValidationError(_))));
     }
 }
