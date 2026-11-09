@@ -833,46 +833,36 @@ done:
         assert!(neon_vector_ops(&over("i64", "add")) > 0);
     }
 
+    /// One case per guard the vectorizer refuses at, so the list says which
+    /// guards are covered and the failure says which one let a loop through.
     #[test]
-    fn widens_a_loop_that_rewrites_its_own_elements() {
-        let source = loop_over(
-            "  %q = getelem.i64 %a, %j
-  %x = load.i64 %q
-  %z = add.i64 %x, 5
-  store.i64 %q, %z",
-        );
-        assert!(vector_ops(&source, X86CpuLevel::V2) > 0);
-    }
-
-    #[test]
-    fn refuses_a_store_that_overlaps_the_next_load() {
-        let source = loop_over(
-            "  %src = getelem.i64 %a, %j
+    fn a_loop_the_analysis_cannot_prove_safe_is_left_scalar() {
+        let cases: Vec<(&str, String)> = vec![
+            (
+                "a store that overlaps the next load",
+                loop_over(
+                    "  %src = getelem.i64 %a, %j
   %j1 = add.i64 %j, 1
   %dst = getelem.i64 %a, %j1
   %x = load.i64 %src
   %z = add.i64 %x, 5
   store.i64 %dst, %z",
-        );
-        assert_eq!(vector_ops(&source, X86CpuLevel::V2), 0);
-    }
-
-    #[test]
-    fn refuses_a_second_array_the_analysis_cannot_separate() {
-        let source = loop_over(
-            "  %q = getelem.i64 %a, %j
+                ),
+            ),
+            (
+                "a second array the analysis cannot separate",
+                loop_over(
+                    "  %q = getelem.i64 %a, %j
   %r = getelem.i64 %b, %j
   %x = load.i64 %q
   %y = load.i64 %r
   %z = add.i64 %x, %y
   store.i64 %q, %z",
-        );
-        assert_eq!(vector_ops(&source, X86CpuLevel::V2), 0);
-    }
-
-    #[test]
-    fn refuses_a_stride_wider_than_one_element() {
-        let source = "fn @f() -> i64 {
+                ),
+            ),
+            (
+                "a stride wider than one element",
+                "fn @f() -> i64 {
 entry:
   %a = stackalloc.[64 x i64]
   %j = add.i64 0, 0
@@ -890,36 +880,31 @@ body:
   jmp head
 done:
   ret.i64 0
-}";
-        assert_eq!(vector_ops(source, X86CpuLevel::V2), 0);
-    }
-
-    #[test]
-    fn refuses_a_trip_count_the_vector_width_does_not_divide() {
-        let source = loop_over(
-            "  %q = getelem.i64 %a, %j
+}"
+                .to_string(),
+            ),
+            (
+                "a trip count the vector width does not divide",
+                loop_over(
+                    "  %q = getelem.i64 %a, %j
   %x = load.i64 %q
   %z = add.i64 %x, 5
   store.i64 %q, %z",
-        )
-        .replace("lt.i64 %j, 64", "lt.i64 %j, 63");
-        assert_eq!(vector_ops(&source, X86CpuLevel::V2), 0);
-    }
-
-    #[test]
-    fn refuses_volatile_accesses() {
-        let source = loop_over(
-            "  %q = getelem.i64 %a, %j
+                )
+                .replace("lt.i64 %j, 64", "lt.i64 %j, 63"),
+            ),
+            (
+                "volatile accesses",
+                loop_over(
+                    "  %q = getelem.i64 %a, %j
   %x = volatile load.i64 %q
   %z = add.i64 %x, 5
   volatile store.i64 %q, %z",
-        );
-        assert_eq!(vector_ops(&source, X86CpuLevel::V2), 0);
-    }
-
-    #[test]
-    fn refuses_a_loop_whose_bound_is_not_known() {
-        let source = "fn @f(i64 %n) -> i64 {
+                ),
+            ),
+            (
+                "a loop whose bound is not known",
+                "fn @f(i64 %n) -> i64 {
 entry:
   %a = stackalloc.[64 x i64]
   %j = add.i64 0, 0
@@ -936,39 +921,23 @@ body:
   jmp head
 done:
   ret.i64 0
-}";
-        assert_eq!(vector_ops(source, X86CpuLevel::V2), 0);
-    }
-
-    #[test]
-    fn a_64_bit_lane_multiply_waits_for_a_native_one() {
-        let source = loop_over(
-            "  %q = getelem.i64 %a, %j
-  %x = load.i64 %q
-  %z = mul.i64 %x, 3
-  store.i64 %q, %z",
-        );
-        assert_eq!(vector_ops(&source, X86CpuLevel::V2), 0);
-        assert_eq!(vector_ops(&source, X86CpuLevel::V3), 0);
-        assert!(vector_ops(&source, X86CpuLevel::V4) > 0);
-    }
-
-    #[test]
-    fn refuses_a_store_that_overlaps_the_previous_load() {
-        let source = loop_over(
-            "  %dst = getelem.i64 %a, %j
+}"
+                .to_string(),
+            ),
+            (
+                "a store that overlaps the previous load",
+                loop_over(
+                    "  %dst = getelem.i64 %a, %j
   %j1 = add.i64 %j, 1
   %src = getelem.i64 %a, %j1
   %x = load.i64 %src
   %z = add.i64 %x, 3
   store.i64 %dst, %z",
-        );
-        assert_eq!(vector_ops(&source, X86CpuLevel::V2), 0);
-    }
-
-    #[test]
-    fn refuses_a_loop_carried_scalar() {
-        let source = "fn @f() -> i64 {
+                ),
+            ),
+            (
+                "a loop carried scalar",
+                "fn @f() -> i64 {
 entry:
   %a = stackalloc.[64 x i64]
   %j = add.i64 0, 0
@@ -987,13 +956,12 @@ body:
   jmp head
 done:
   ret.i64 0
-}";
-        assert_eq!(vector_ops(source, X86CpuLevel::V2), 0);
-    }
-
-    #[test]
-    fn refuses_two_pointer_parameters_the_analysis_cannot_separate() {
-        let source = "fn @f(ptr %dst, ptr %src) -> i64 {
+}"
+                .to_string(),
+            ),
+            (
+                "two pointer parameters the analysis cannot separate",
+                "fn @f(ptr %dst, ptr %src) -> i64 {
 entry:
   %j = add.i64 0, 0
   jmp head
@@ -1010,13 +978,12 @@ body:
   jmp head
 done:
   ret.i64 0
-}";
-        assert_eq!(vector_ops(source, X86CpuLevel::V2), 0);
-    }
-
-    #[test]
-    fn refuses_a_float_reduction() {
-        let source = "fn @f() -> i64 {
+}"
+                .to_string(),
+            ),
+            (
+                "a float reduction",
+                "fn @f() -> i64 {
 entry:
   %a = stackalloc.[64 x f64]
   %k = add.i64 0, 0
@@ -1034,13 +1001,12 @@ body:
 done:
   %ti = fptoint.f64.i64 %t
   ret.i64 %ti
-}";
-        assert_eq!(vector_ops(source, X86CpuLevel::V2), 0);
-    }
-
-    #[test]
-    fn refuses_a_second_write_to_the_induction_variable() {
-        let source = "fn @f() -> i64 {
+}"
+                .to_string(),
+            ),
+            (
+                "a second write to the induction variable",
+                "fn @f() -> i64 {
 entry:
   %a = stackalloc.[64 x i64]
   %j = add.i64 0, 0
@@ -1058,13 +1024,12 @@ body:
   jmp head
 done:
   ret.i64 0
-}";
-        assert_eq!(vector_ops(source, X86CpuLevel::V2), 0);
-    }
-
-    #[test]
-    fn refuses_a_float_division() {
-        let source = "fn @f() -> i64 {
+}"
+                .to_string(),
+            ),
+            (
+                "a float division",
+                "fn @f() -> i64 {
 entry:
   %a = stackalloc.[64 x f64]
   %j = add.i64 0, 0
@@ -1081,7 +1046,36 @@ body:
   jmp head
 done:
   ret.i64 0
-}";
-        assert_eq!(vector_ops(source, X86CpuLevel::V2), 0);
+}"
+                .to_string(),
+            ),
+        ];
+        for (guard, source) in cases {
+            assert_eq!(vector_ops(&source, X86CpuLevel::V2), 0, "{guard}");
+        }
+    }
+
+    #[test]
+    fn widens_a_loop_that_rewrites_its_own_elements() {
+        let source = loop_over(
+            "  %q = getelem.i64 %a, %j
+  %x = load.i64 %q
+  %z = add.i64 %x, 5
+  store.i64 %q, %z",
+        );
+        assert!(vector_ops(&source, X86CpuLevel::V2) > 0);
+    }
+
+    #[test]
+    fn a_64_bit_lane_multiply_waits_for_a_native_one() {
+        let source = loop_over(
+            "  %q = getelem.i64 %a, %j
+  %x = load.i64 %q
+  %z = mul.i64 %x, 3
+  store.i64 %q, %z",
+        );
+        assert_eq!(vector_ops(&source, X86CpuLevel::V2), 0);
+        assert_eq!(vector_ops(&source, X86CpuLevel::V3), 0);
+        assert!(vector_ops(&source, X86CpuLevel::V4) > 0);
     }
 }
