@@ -217,6 +217,8 @@ impl fmt::Display for SymbolRef<'_> {
 pub enum InitElement<'a> {
     Literal(Literal<'a>),
     Symbol(SymbolRef<'a>),
+    /// An element list of its own, for a slot whose type is an array or struct.
+    List(Vec<InitElement<'a>>),
 }
 
 impl fmt::Display for InitElement<'_> {
@@ -224,6 +226,10 @@ impl fmt::Display for InitElement<'_> {
         match self {
             InitElement::Literal(literal) => write!(f, "{literal}"),
             InitElement::Symbol(symbol) => write!(f, "{symbol}"),
+            InitElement::List(elements) => {
+                let elements: Vec<String> = elements.iter().map(ToString::to_string).collect();
+                write!(f, "[{}]", elements.join(", "))
+            }
         }
     }
 }
@@ -1030,30 +1036,58 @@ fn write_global(
     match &decl.initializer {
         None => Ok(()),
         Some(GlobalInit::List(elements)) => {
-            let (open, close) = if is_struct_type(&decl.ty, types, 0) {
-                ('{', '}')
-            } else {
-                ('[', ']')
-            };
-            let items: Vec<String> = elements.iter().map(ToString::to_string).collect();
-            write!(f, " = {open}{}{close}", items.join(", "))
+            write!(f, " = ")?;
+            write_init_list(f, &decl.ty, elements, types)
         }
         Some(init) => write!(f, " = {init}"),
     }
 }
 
-fn is_struct_type(
-    ty: &Type<'_>,
-    types: &HashMap<Identifier<'_>, TypeDeclaration<'_>>,
+/// The type a name stands for, or the type itself when it is not a name.
+fn peel_named<'t, 'a>(
+    ty: &'t Type<'a>,
+    types: &'t HashMap<Identifier<'a>, TypeDeclaration<'a>>,
     depth: usize,
-) -> bool {
+) -> Option<&'t Type<'a>> {
     match ty {
-        Type::Struct { .. } => true,
-        Type::Named(name) if depth < 32 => types
-            .get(name)
-            .is_some_and(|decl| is_struct_type(&decl.ty, types, depth + 1)),
-        _ => false,
+        Type::Named(name) if depth < 32 => peel_named(&types.get(name)?.ty, types, depth + 1),
+        Type::Named(_) => None,
+        other => Some(other),
     }
+}
+
+/// Braces for a struct and brackets for an array, at every level of nesting.
+fn write_init_list(
+    f: &mut fmt::Formatter<'_>,
+    ty: &Type<'_>,
+    elements: &[InitElement<'_>],
+    types: &HashMap<Identifier<'_>, TypeDeclaration<'_>>,
+) -> fmt::Result {
+    let peeled = peel_named(ty, types, 0);
+    let (open, close) = match peeled {
+        Some(Type::Struct { .. }) => ('{', '}'),
+        _ => ('[', ']'),
+    };
+    write!(f, "{open}")?;
+    for (index, element) in elements.iter().enumerate() {
+        if index > 0 {
+            write!(f, ", ")?;
+        }
+        let slot = match (element, peeled) {
+            (InitElement::List(_), Some(Type::Array { element_type, .. })) => {
+                Some(element_type.as_ref())
+            }
+            (InitElement::List(_), Some(Type::Struct { fields, .. })) => {
+                fields.get(index).map(|field| &field.ty)
+            }
+            _ => None,
+        };
+        match (element, slot) {
+            (InitElement::List(nested), Some(slot)) => write_init_list(f, slot, nested, types)?,
+            _ => write!(f, "{element}")?,
+        }
+    }
+    write!(f, "{close}")
 }
 
 impl fmt::Display for Module<'_> {

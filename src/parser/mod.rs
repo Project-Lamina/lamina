@@ -503,8 +503,8 @@ mod tests {
 
     use super::*;
     use crate::ir::{
-        AtomicBinOp, BinaryOp, CmpOp, GlobalInit, IRBuilder, Instruction, Literal, MemoryOrdering,
-        Type, Value,
+        AtomicBinOp, BinaryOp, CmpOp, GlobalInit, IRBuilder, InitElement, Instruction, Literal,
+        MemoryOrdering, Type, Value,
         builder::{i32 as ir_i32, i64 as ir_i64},
     };
     use std::fs;
@@ -842,6 +842,75 @@ mod tests {
             .expect_err("an unknown global annotation should be rejected")
             .to_string();
         assert!(misspelled.contains("Did you mean @align?"), "{misspelled}");
+    }
+
+    #[test]
+    fn nested_element_list_fills_slot_that_is_itself_aggregate() {
+        let source = r#"
+type !Pair = struct { a: i32, b: i64 }
+global $grid: [2 x [3 x i64]] = [[1, 2, 3], [4, 5, 6]]
+global $pairs: [2 x !Pair] = [{7, 8}, {9, 10}]
+"#;
+        let module = parse_module(source).expect("nested lists parse");
+        let Some(GlobalInit::List(rows)) = &module.global_declarations["grid"].initializer else {
+            panic!("grid takes an element list");
+        };
+        assert_eq!(rows.len(), 2);
+        let InitElement::List(second) = &rows[1] else {
+            panic!("a row is a list of its own");
+        };
+        assert_eq!(
+            second,
+            &vec![
+                InitElement::Literal(Literal::I64(4)),
+                InitElement::Literal(Literal::I64(5)),
+                InitElement::Literal(Literal::I64(6)),
+            ]
+        );
+        let Some(GlobalInit::List(pairs)) = &module.global_declarations["pairs"].initializer else {
+            panic!("pairs takes an element list");
+        };
+        assert!(matches!(pairs[0], InitElement::List(_)));
+    }
+
+    #[test]
+    fn printed_nested_list_parses_back_the_same() {
+        let source = r#"
+type !Holder = struct { tag: i64, cells: [3 x i64] }
+global $holder: !Holder = { 11, [12, 13] }
+global $grid: [2 x [2 x i32]] = [[1, 2], [3, 4]]
+"#;
+        let module = parse_module(source).expect("nested lists parse");
+        let printed = module.to_string();
+        assert!(
+            printed.contains("global $holder: !Holder = {11, [12, 13]}"),
+            "{printed}"
+        );
+        let again = parse_module(&printed).expect("printed module parses");
+        assert_eq!(
+            again.global_declarations["holder"].initializer,
+            module.global_declarations["holder"].initializer
+        );
+        assert_eq!(
+            again.global_declarations["grid"].initializer,
+            module.global_declarations["grid"].initializer
+        );
+    }
+
+    #[test]
+    fn element_list_cannot_fill_scalar_slot() {
+        let err = parse_module("global $x: [2 x i64] = [[1], 2]")
+            .expect_err("a scalar slot takes no list")
+            .to_string();
+        assert!(err.contains("not a value of type i64"), "{err}");
+    }
+
+    #[test]
+    fn nested_element_list_keeps_its_own_arity() {
+        let err = parse_module("global $g: [2 x [2 x i64]] = [[1, 2, 3], [4, 5]]")
+            .expect_err("a row holds two elements")
+            .to_string();
+        assert!(err.contains("2 elements fit here"), "{err}");
     }
 
     #[test]

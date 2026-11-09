@@ -189,7 +189,6 @@ fn parse_tls_model_argument(state: &mut ParserState<'_>) -> Result<TlsModel, Lam
     }
 }
 
-/// Parses `[a, b, c]` for an array global, or `{a, b, c}` for a struct one.
 /// Reads `+ N` or `- N` after a symbol, or nothing. The linker adds it to the
 /// address, so a frontend cannot fold it away.
 fn parse_addend(state: &mut ParserState<'_>) -> Result<i64, LaminaError> {
@@ -225,6 +224,8 @@ fn parse_symbol_ref<'a>(state: &mut ParserState<'a>) -> Result<SymbolRef<'a>, La
     })
 }
 
+/// Parses `[a, b, c]` for an array and `{a, b, c}` for a struct, nesting either one
+/// inside a slot whose own type is an aggregate. `ty` has its names already resolved.
 fn parse_initializer_list<'a>(
     state: &mut ParserState<'a>,
     ty: &Type<'a>,
@@ -246,7 +247,7 @@ fn parse_initializer_list<'a>(
         ),
         _ => {
             return Err(state.error(format!(
-                "An element list initializes an array or struct, but this global has type {ty}"
+                "An element list initializes an array or struct, not a value of type {ty}"
             )));
         }
     };
@@ -268,7 +269,9 @@ fn parse_initializer_list<'a>(
             return Err(state.error(format!("{capacity} elements fit here, this is one more")));
         }
         state.skip_whitespace_and_comments();
-        let element = if matches!(state.current_char(), Some('@') | Some('$')) {
+        let element = if matches!(state.current_char(), Some('[') | Some('{')) {
+            InitElement::List(parse_initializer_list(state, hint)?)
+        } else if matches!(state.current_char(), Some('@') | Some('$')) {
             InitElement::Symbol(parse_symbol_ref(state)?)
         } else {
             match parse_value_with_type_hint(state, hint)? {
