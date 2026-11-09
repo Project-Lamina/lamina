@@ -705,7 +705,11 @@ mod tests {
             .build();
         let before = func.blocks[0].instructions.clone();
 
-        assert!(!InstructionScheduling.apply(&mut func).expect("scheduling failed"));
+        assert!(
+            !InstructionScheduling
+                .apply(&mut func)
+                .expect("scheduling failed")
+        );
 
         let after = &func.blocks[0].instructions;
         assert_eq!(after.len(), before.len());

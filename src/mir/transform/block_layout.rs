@@ -105,10 +105,7 @@ fn reorder(func: &mut Function) -> bool {
         return false;
     }
     let mut blocks: Vec<_> = func.blocks.drain(..).map(Some).collect();
-    func.blocks = order
-        .into_iter()
-        .filter_map(|i| blocks[i].take())
-        .collect();
+    func.blocks = order.into_iter().filter_map(|i| blocks[i].take()).collect();
     true
 }
 
@@ -165,7 +162,11 @@ mod tests {
         let order = labels(&func);
         let body = order.iter().position(|l| *l == "body").unwrap();
         let next = order.iter().position(|l| *l == "next").unwrap();
-        assert_eq!(next, body + 1, "loop body split by another block: {order:?}");
+        assert_eq!(
+            next,
+            body + 1,
+            "loop body split by another block: {order:?}"
+        );
     }
 
     #[test]

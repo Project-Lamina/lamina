@@ -278,9 +278,7 @@ fn affinities(function: &Function) -> HashMap<VirtualReg, Vec<VirtualReg>> {
                 dst: Register::Virtual(dst),
                 lhs: Operand::Register(Register::Virtual(src)),
                 ..
-            } => {
-                note(*dst, *src)
-            }
+            } => note(*dst, *src),
             _ => {}
         }
     }
@@ -675,7 +673,10 @@ impl GraphColorAllocator {
                     _ => None,
                 });
             if picked.is_none() {
-                picked = available_regs.iter().find(|reg| free(reg, &occupied)).copied();
+                picked = available_regs
+                    .iter()
+                    .find(|reg| free(reg, &occupied))
+                    .copied();
             }
 
             match picked {

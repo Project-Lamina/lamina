@@ -36,6 +36,7 @@ mod unroll;
 mod vectorization;
 
 pub use addressing::AddressingCanonicalization;
+pub use block_layout::BlockLayout;
 pub use branch_opt::BranchOptimization;
 pub use cfg::{CfgSimplify, JumpThreading};
 pub(crate) use cfg::{Dominators, calculate_dominators, compute_back_edge_headers};
@@ -53,7 +54,6 @@ pub use memory::MemoryOptimization;
 pub use peephole::Peephole;
 pub use reduction_exit::ReductionExit;
 pub use scheduling::InstructionScheduling;
-pub use block_layout::BlockLayout;
 pub use sroa::ScalarReplacement;
 pub use strength_reduction::StrengthReduction;
 pub use tail_call::TailCallOptimization;
@@ -473,8 +473,7 @@ impl TransformPipeline {
         {
             pipeline.canonicalize_addresses = true;
             // On x86_64 hoisting only pays once the loops it feeds are rotated.
-            pipeline.hoist_constants =
-                target == TargetArchitecture::Aarch64 || opt_level >= 3;
+            pipeline.hoist_constants = target == TargetArchitecture::Aarch64 || opt_level >= 3;
         }
         pipeline
     }
