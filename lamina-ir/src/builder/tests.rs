@@ -1727,6 +1727,7 @@ mod tests {
             .declare_global(GlobalDeclaration {
                 name: "count",
                 ty: Type::Primitive(PrimitiveType::I32),
+                is_extern: false,
                 initializer: Some(GlobalInit::Value(Value::Constant(Literal::I32(7)))),
                 exported: true,
                 visibility: None,
@@ -1784,6 +1785,7 @@ mod tests {
         builder.declare_global(GlobalDeclaration {
             name: "secret",
             ty: Type::Primitive(PrimitiveType::I64),
+            is_extern: false,
             initializer: None,
             exported: true,
             visibility: Some(GlobalVisibility::Internal),
@@ -1800,6 +1802,7 @@ mod tests {
         builder.declare_global(GlobalDeclaration {
             name: "buf",
             ty: Type::Primitive(PrimitiveType::I64),
+            is_extern: false,
             initializer: None,
             exported: false,
             visibility: None,
@@ -1819,6 +1822,7 @@ mod tests {
                 element_type: Box::new(Type::Primitive(PrimitiveType::I32)),
                 size: 4,
             },
+            is_extern: false,
             initializer: Some(GlobalInit::Value(Value::Constant(Literal::String("abc")))),
             exported: false,
             visibility: None,
@@ -1914,6 +1918,7 @@ mod tests {
         builder.declare_global(GlobalDeclaration {
             name: "secret",
             ty: Type::Primitive(PrimitiveType::I64),
+            is_extern: false,
             initializer: None,
             exported: true,
             visibility: Some(GlobalVisibility::Internal),

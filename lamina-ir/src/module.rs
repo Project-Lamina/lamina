@@ -263,6 +263,7 @@ impl fmt::Display for GlobalInit<'_> {
 ///         element_type: Box::new(Type::Primitive(PrimitiveType::I8)),
 ///         size: 13,
 ///     },
+///     is_extern: false,
 ///     initializer: Some(GlobalInit::Value(Value::Constant(Literal::String("Hello, World!")))),
 ///     exported: false,
 ///     visibility: None,
@@ -1211,6 +1212,7 @@ mod tests {
         let decl1 = GlobalDeclaration {
             name: "count",
             ty: Type::Primitive(PrimitiveType::I32),
+            is_extern: false,
             initializer: Some(GlobalInit::Value(Value::Constant(Literal::I32(0)))),
             exported: false,
             visibility: None,
@@ -1226,6 +1228,7 @@ mod tests {
                 element_type: Box::new(Type::Primitive(PrimitiveType::I8)),
                 size: 256,
             },
+            is_extern: false,
             initializer: None,
             exported: false,
             visibility: None,
@@ -1244,6 +1247,7 @@ mod tests {
                 element_type: Box::new(Type::Primitive(PrimitiveType::I8)),
                 size: 1048576,
             },
+            is_extern: false,
             initializer: None,
             exported: true,
             visibility: None,
@@ -1283,6 +1287,7 @@ mod tests {
                     GlobalDeclaration {
                         name,
                         ty: Type::Primitive(PrimitiveType::I32),
+                        is_extern: false,
                         initializer: Some(GlobalInit::Value(Value::Constant(Literal::I32(1)))),
                         exported: false,
                         visibility: None,
@@ -1335,6 +1340,7 @@ mod tests {
             GlobalDeclaration {
                 name: "PI",
                 ty: Type::Primitive(PrimitiveType::F32),
+                is_extern: false,
                 initializer: Some(GlobalInit::Value(Value::Constant(Literal::F32(PI)))),
                 exported: false,
                 visibility: None,
