@@ -118,7 +118,14 @@ jobs:
           python3 -m pip install --quiet pytest
           python3 -m pytest -q
       - name: Run testcases
+        if: runner.os != 'Linux'
         run: python3 run_tests.py
+      # Every program must give the same answer at every optimization level, so a
+      # pass that changes behaviour instead of speed fails here rather than later.
+      # Linux only: the levels differ in the passes they run, not in the host.
+      - name: Run testcases (every opt level)
+        if: runner.os == 'Linux'
+        run: python3 run_tests.py --opt-level all
 
       # The aarch64 backend is only exercised by compiling for it and running the
       # result under an emulator. Building alone proved nothing about it, and the
@@ -127,7 +134,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu gcc-s390x-linux-gnu
+          sudo apt-get install -y gcc-aarch64-linux-gnu gcc-s390x-linux-gnu gcc-riscv64-linux-gnu
           sudo apt-get install -y qemu-user-static || sudo apt-get install -y qemu-user || sudo apt-get install -y qemu-user-binfmt
       - name: Run testcases (aarch64 linux)
         if: runner.os == 'Linux'
@@ -137,6 +144,11 @@ jobs:
       - name: Run testcases (s390x linux)
         if: runner.os == 'Linux'
         run: python3 run_tests.py --target s390x_linux
+      # riscv64 has a global allocation pass and no native runner, so qemu is the
+      # only thing that checks the code it produces gives the right answer.
+      - name: Run testcases (riscv64 linux)
+        if: runner.os == 'Linux'
+        run: python3 run_tests.py --target riscv64_linux
 
       # A crashed testcase writes no stdout and usually no stderr, so the exit
       # status alone does not say where it died. run_tests.py lists the crashed
