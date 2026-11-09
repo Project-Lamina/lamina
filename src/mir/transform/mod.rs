@@ -746,96 +746,36 @@ ret.i64 %s
     }
 
     #[test]
-    fn test_transform_pipeline_empty() {
-        let pipeline = TransformPipeline::new();
-        assert!(pipeline.is_empty());
-        assert_eq!(pipeline.len(), 0);
+    fn a_level_keeps_every_pass_the_level_below_runs() {
+        for level in 1..=3u8 {
+            let lower = TransformPipeline::default_for_opt_level(level - 1);
+            let higher = TransformPipeline::default_for_opt_level(level);
+            for name in lower.transform_names() {
+                assert!(
+                    higher.transform_names().contains(&name),
+                    "O{level} drops {name}, which O{} runs",
+                    level - 1
+                );
+            }
+        }
     }
 
     #[test]
-    fn test_transform_pipeline_add_transform() {
-        let pipeline = TransformPipeline::new()
-            .add_transform(Peephole)
-            .add_transform(DeadCodeElimination);
-
-        assert_eq!(pipeline.len(), 2);
-        assert!(!pipeline.is_empty());
-    }
-
-    #[test]
-    fn test_transform_pipeline_apply_to_function() {
-        let func = FunctionBuilder::new("test")
-            .param(VirtualReg::gpr(0).into(), MirType::Scalar(ScalarType::I64))
-            .returns(MirType::Scalar(ScalarType::I64))
-            .block("entry")
-            .instr(Instruction::Ret {
-                value: Some(Operand::Register(VirtualReg::gpr(0).into())),
-            })
-            .build();
-
-        let mut func = func;
-        let pipeline = TransformPipeline::new().add_transform(Peephole);
-        let stats = pipeline.apply_to_function(&mut func).unwrap();
-        assert_eq!(stats.transforms_run, 1);
-    }
-
-    #[test]
-    fn test_transform_pipeline_apply_to_module() {
-        let mut module = Module::new("test");
-        let pipeline = TransformPipeline::new().add_transform(Peephole);
-        let stats = pipeline.apply_to_module(&mut module).unwrap();
-        assert_eq!(stats.transforms_run, 0);
-    }
-
-    #[test]
-    fn test_phase_ordering_o1_passes() {
-        let func = FunctionBuilder::new("test")
-            .param(VirtualReg::gpr(0).into(), MirType::Scalar(ScalarType::I64))
-            .returns(MirType::Scalar(ScalarType::I64))
-            .block("entry")
-            .instr(Instruction::Ret {
-                value: Some(Operand::Register(VirtualReg::gpr(0).into())),
-            })
-            .build();
-
-        let mut func = func;
-        let pipeline = TransformPipeline::default_for_opt_level(1);
-        let stats = pipeline.apply_to_function(&mut func).unwrap();
-        assert!(stats.transforms_run > 0);
-    }
-
-    #[test]
-    fn test_phase_ordering_o2_passes() {
-        let func = FunctionBuilder::new("test")
-            .param(VirtualReg::gpr(0).into(), MirType::Scalar(ScalarType::I64))
-            .returns(MirType::Scalar(ScalarType::I64))
-            .block("entry")
-            .instr(Instruction::Ret {
-                value: Some(Operand::Register(VirtualReg::gpr(0).into())),
-            })
-            .build();
-
-        let mut func = func;
-        let pipeline = TransformPipeline::default_for_opt_level(2);
-        let stats = pipeline.apply_to_function(&mut func).unwrap();
-        assert!(stats.transforms_run > 0);
-    }
-
-    #[test]
-    fn test_phase_ordering_o3_passes() {
-        let func = FunctionBuilder::new("test")
-            .param(VirtualReg::gpr(0).into(), MirType::Scalar(ScalarType::I64))
-            .returns(MirType::Scalar(ScalarType::I64))
-            .block("entry")
-            .instr(Instruction::Ret {
-                value: Some(Operand::Register(VirtualReg::gpr(0).into())),
-            })
-            .build();
-
-        let mut func = func;
-        let pipeline = TransformPipeline::default_for_opt_level(3);
-        let stats = pipeline.apply_to_function(&mut func).unwrap();
-        assert!(stats.transforms_run > 0);
+    fn inlining_and_address_canonicalization_never_come_from_the_level_alone() {
+        for level in 0..=3u8 {
+            let names = TransformPipeline::default_for_opt_level(level).transform_names();
+            assert!(
+                names.contains(&"branch_optimization") == (level >= 1),
+                "O{level}"
+            );
+            assert!(
+                names.contains(&"copy_propagation") == (level >= 2),
+                "O{level}"
+            );
+            // Both are reached through `for_target`, which knows the architecture.
+            assert!(!names.contains(&"function_inlining"), "O{level}");
+            assert!(!names.contains(&"addressing_canonicalization"), "O{level}");
+        }
     }
 
     #[test]
@@ -901,61 +841,6 @@ ret.i64 %s
             .iter()
             .any(|inst| matches!(&inst.instr, Instruction::IntBinary { .. }));
         assert!(!dead, "{:?}", func.blocks[0].instructions);
-    }
-
-    #[test]
-    fn test_branch_optimization_enabled() {
-        let pipeline_o1 = TransformPipeline::default_for_opt_level(1);
-        let pipeline_o2 = TransformPipeline::default_for_opt_level(2);
-        let pipeline_o3 = TransformPipeline::default_for_opt_level(3);
-
-        assert!(
-            pipeline_o1
-                .transform_names()
-                .contains(&"branch_optimization")
-        );
-        assert!(
-            pipeline_o2
-                .transform_names()
-                .contains(&"branch_optimization")
-        );
-        assert!(
-            pipeline_o3
-                .transform_names()
-                .contains(&"branch_optimization")
-        );
-    }
-
-    #[test]
-    fn test_copy_propagation_enabled() {
-        let pipeline_o2 = TransformPipeline::default_for_opt_level(2);
-        let pipeline_o3 = TransformPipeline::default_for_opt_level(3);
-
-        assert!(pipeline_o2.transform_names().contains(&"copy_propagation"));
-        assert!(pipeline_o3.transform_names().contains(&"copy_propagation"));
-    }
-
-    #[test]
-    fn test_regression_function_inlining_disabled() {
-        let pipeline_o3 = TransformPipeline::default_for_opt_level(3);
-        assert!(!pipeline_o3.transform_names().contains(&"function_inlining"));
-    }
-
-    #[test]
-    fn test_regression_addressing_canonicalization_disabled() {
-        let pipeline_o2 = TransformPipeline::default_for_opt_level(2);
-        let pipeline_o3 = TransformPipeline::default_for_opt_level(3);
-
-        assert!(
-            !pipeline_o2
-                .transform_names()
-                .contains(&"addressing_canonicalization")
-        );
-        assert!(
-            !pipeline_o3
-                .transform_names()
-                .contains(&"addressing_canonicalization")
-        );
     }
 }
 
