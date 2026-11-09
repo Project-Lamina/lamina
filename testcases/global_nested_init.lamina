@@ -1,0 +1,82 @@
+# An initializer list nested inside a slot that is itself an aggregate: rows of a
+# two-dimensional array, structs in an array, and an array inside a struct.
+type !Pair = struct { a: i32, b: i64 }
+type !Holder = struct { tag: i64, cells: [3 x i64] }
+
+global $grid: [2 x [3 x i64]] = [[1, 2, 3], [4, 5, 6]]
+global $pairs: [2 x !Pair] = [{7, 8}, {9, 10}]
+global $holder: !Holder = { 11, [12, 13] }
+
+type !Entry = struct { name: ptr, code: i64 }
+global $a: [2 x i8] = "A"
+global $b: [2 x i8] = "B"
+global $table: [2 x !Entry] = [{ $a, 1 }, { $b, 2 }]
+
+fn @main() -> i64 {
+entry:
+  %g0 = getelem.i64 $grid, 0
+  %v0 = load.i64 %g0
+  call @print_i64(%v0)
+  %g5 = getelem.i64 $grid, 5
+  %v5 = load.i64 %g5
+  call @print_i64(%v5)
+  %p1 = getelem.!Pair $pairs, 1
+  %pa = getfieldptr.!Pair %p1, 0
+  %av = load.i32 %pa
+  %aw = extend.i32.i64 %av
+  call @print_i64(%aw)
+  %pb = getfieldptr.!Pair %p1, 1
+  %bv = load.i64 %pb
+  call @print_i64(%bv)
+  %ht = getfieldptr.!Holder $holder, 0
+  %tv = load.i64 %ht
+  call @print_i64(%tv)
+  %hc = getfieldptr.!Holder $holder, 1
+  %c1 = getelem.i64 %hc, 1
+  %cv = load.i64 %c1
+  call @print_i64(%cv)
+  %c2 = getelem.i64 %hc, 2
+  %zv = load.i64 %c2
+  call @print_i64(%zv)
+  %e1 = getelem.!Entry $table, 1
+  %np = getfieldptr.!Entry %e1, 0
+  %nv = load.ptr %np
+  %ch = load.i8 %nv
+  %cw = extend.i8.i64 %ch
+  call @print_i64(%cw)
+  %cp = getfieldptr.!Entry %e1, 1
+  %cv = load.i64 %cp
+  call @print_i64(%cv)
+  ret.i64 0
+}
+
+fn @put_u64(u64 %n) -> void {
+entry:
+  %q = div.u64 %n, 10
+  %r = rem.u64 %n, 10
+  %d = add.u64 %r, 48
+  %z = eq.u64 %q, 0
+  br %z, last, more
+more:
+  call @put_u64(%q)
+  jmp last
+last:
+  %w = writebyte %d
+  ret.void
+}
+
+fn @print_i64(i64 %n) -> void {
+entry:
+  %neg = lt.i64 %n, 0
+  %m = sub.i64 0, %n
+  %s = select.i64 %neg, %m, %n
+  %u = bitcast.i64.u64 %s
+  br %neg, minus, digits
+minus:
+  %c = writebyte 45
+  jmp digits
+digits:
+  call @put_u64(%u)
+  %nl = writebyte 10
+  ret.void
+}
