@@ -32,6 +32,10 @@ pub struct Global {
     /// Initial value (as raw bytes)
     pub initializer: Option<Vec<u8>>,
 
+    /// Whether the symbol is defined in another module. Such a global reserves no
+    /// storage here; it is a name the linker resolves.
+    pub is_extern: bool,
+
     /// Whether the symbol is visible to other modules
     pub exported: bool,
 
@@ -77,6 +81,7 @@ impl Global {
             ty,
             mutable: true,
             initializer: None,
+            is_extern: false,
             exported: false,
             visibility: None,
             weak: false,

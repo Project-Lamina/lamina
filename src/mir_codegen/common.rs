@@ -1247,10 +1247,12 @@ fn emit_global_storage<W: Write>(
             ".section .tbss,\"awT\",@nobits",
         )
     };
+    // An @extern global names a symbol another module defines, so this one reserves
+    // no storage for it and the linker resolves the reference.
     let mut names: Vec<&str> = module
         .globals
         .iter()
-        .filter(|(_, global)| select(global))
+        .filter(|(_, global)| !global.is_extern && select(global))
         .map(|(name, _)| name.as_str())
         .collect();
     names.sort_unstable();

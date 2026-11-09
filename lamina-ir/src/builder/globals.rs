@@ -80,6 +80,7 @@ impl<'a> IRBuilder<'a> {
                 element_type: Box::new(Type::Primitive(PrimitiveType::I8)),
                 size: text.len() as u64 + 1,
             },
+            is_extern: false,
             initializer: Some(GlobalInit::Value(Value::Constant(Literal::String(text)))),
             exported: false,
             visibility: None,

@@ -961,6 +961,7 @@ global $grid: [2 x [2 x i32]] = [[1, 2], [3, 4]]
             .declare_global(GlobalDeclaration {
                 name: "count",
                 ty: Type::Primitive(PrimitiveType::I32),
+                is_extern: false,
                 initializer: Some(GlobalInit::Value(Value::Constant(Literal::I32(7)))),
                 exported: true,
                 visibility: None,
@@ -975,6 +976,37 @@ global $grid: [2 x [2 x i32]] = [[1, 2], [3, 4]]
 
         let parsed = parse_module(&text).expect("builder output parses");
         assert_eq!(parsed, module);
+    }
+
+    #[test]
+    fn an_extern_global_is_declared_without_an_initializer() {
+        let module = parse_module("@extern\nglobal $outside: i64\n")
+            .expect("an extern global declares a symbol defined elsewhere");
+        let global = module
+            .global_declarations
+            .get("outside")
+            .expect("the global");
+        assert!(global.is_extern);
+        assert!(global.initializer.is_none());
+        assert_eq!(
+            parse_module(&module.to_string()).expect("round trip"),
+            module
+        );
+    }
+
+    #[test]
+    fn an_extern_global_takes_no_initializer_and_no_visibility() {
+        for (source, fragment) in [
+            ("@extern\nglobal $x: i64 = 1\n", "has an initializer"),
+            ("@extern\n@export\nglobal $x: i64\n", "@export"),
+            ("@extern\n@weak\nglobal $x: i64\n", "@weak"),
+            ("@extern\n@internal\nglobal $x: i64\n", "visibility"),
+        ] {
+            let message = parse_module(source)
+                .expect_err("the combination is refused")
+                .to_string();
+            assert!(message.contains(fragment), "{source}\n{message}");
+        }
     }
 
     #[test]

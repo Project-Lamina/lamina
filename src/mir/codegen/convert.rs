@@ -662,6 +662,7 @@ pub fn from_ir_for_target(
                 )));
             }
         }
+        global.is_extern = decl.is_extern;
         if decl.exported {
             global = global.exported();
         }

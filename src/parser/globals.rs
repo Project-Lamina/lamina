@@ -18,6 +18,7 @@ use crate::{
 };
 
 const GLOBAL_ANNOTATION_NAMES: &[&str] = &[
+    "extern",
     "export",
     "align",
     "thread_local",
@@ -31,6 +32,7 @@ const GLOBAL_ANNOTATION_NAMES: &[&str] = &[
 /// The annotations written before a `global`.
 #[derive(Debug, Default)]
 pub struct GlobalAnnotations {
+    pub is_extern: bool,
     pub exported: bool,
     pub align: Option<u32>,
     pub thread_local: Option<TlsModel>,
@@ -51,6 +53,12 @@ pub fn parse_global_annotations(
         state.advance();
         let name = state.parse_identifier_str()?;
         match name {
+            "extern" => {
+                if annotations.is_extern {
+                    return Err(state.error("Duplicate annotation: @extern"));
+                }
+                annotations.is_extern = true;
+            }
             "export" => {
                 if annotations.exported {
                     return Err(state.error("Duplicate annotation: @export"));
@@ -105,6 +113,7 @@ pub fn parse_global_declaration<'a>(
     types: &HashMap<Identifier<'a>, TypeDeclaration<'a>>,
 ) -> Result<GlobalDeclaration<'a>, LaminaError> {
     let GlobalAnnotations {
+        is_extern,
         exported,
         align,
         thread_local,
@@ -133,6 +142,23 @@ pub fn parse_global_declaration<'a>(
             )));
         }
     }
+    if is_extern {
+        if exported {
+            return Err(state.error(format!(
+                "Conflicting annotations on global ${name}: @extern and @export cannot be used together"
+            )));
+        }
+        if weak {
+            return Err(state.error(format!(
+                "Conflicting annotations on global ${name}: @extern and @weak cannot be used together"
+            )));
+        }
+        if visibility.is_some() {
+            return Err(state.error(format!(
+                "Conflicting annotations on global ${name}: @extern names a symbol defined elsewhere, so its visibility is not this module's to set"
+            )));
+        }
+    }
     state.expect_char(':')?;
     let ty = parse_type(state)?;
 
@@ -152,9 +178,16 @@ pub fn parse_global_declaration<'a>(
         None
     };
 
+    if is_extern && initializer.is_some() {
+        return Err(state.error(format!(
+            "@extern global ${name} has an initializer\n  Hint: @extern declares a symbol defined elsewhere; drop the initializer to declare it, or drop @extern to define it here"
+        )));
+    }
+
     Ok(GlobalDeclaration {
         name,
         ty,
+        is_extern,
         initializer,
         exported,
         visibility,

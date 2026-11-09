@@ -277,6 +277,9 @@ pub struct GlobalDeclaration<'a> {
     pub name: Identifier<'a>, // e.g., "$message"
     /// The type of the global variable
     pub ty: Type<'a>,
+    /// Whether the symbol is defined in another module (declared with `@extern`).
+    /// Such a global reserves no storage here.
+    pub is_extern: bool,
     /// Optional initializer (None for external symbols)
     pub initializer: Option<GlobalInit<'a>>,
     /// Whether the global is visible to other modules (declared with `@export`)
@@ -995,6 +998,9 @@ impl fmt::Display for GlobalDeclaration<'_> {
         if let Some(model) = self.thread_local {
             write!(f, "@thread_local({model}) ")?;
         }
+        if self.is_extern {
+            write!(f, "@extern ")?;
+        }
         if self.exported {
             write!(f, "@export ")?;
         }
@@ -1022,6 +1028,9 @@ fn write_global(
     }
     if let Some(model) = decl.thread_local {
         write!(f, "@thread_local({model}) ")?;
+    }
+    if decl.is_extern {
+        write!(f, "@extern ")?;
     }
     if decl.exported {
         write!(f, "@export ")?;
