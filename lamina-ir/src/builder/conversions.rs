@@ -5,8 +5,9 @@
 
 use crate::{
     builder::{
-        IRBuilder,
+        BuildError, BuildErrorKind, IRBuilder,
         checks::{check_bitcast, check_sext, check_trunc, check_zext, integer_signedness},
+        require,
     },
     instruction::Instruction,
     types::{PrimitiveType, Type, Value},
@@ -24,12 +25,14 @@ impl<'a> IRBuilder<'a> {
         target_type: PrimitiveType,
         value: Value<'a>,
     ) -> &mut Self {
-        check_zext(source_type, target_type);
-        self.inst(Instruction::ZeroExtend {
-            result,
-            source_type,
-            target_type,
-            value,
+        self.step(|builder| {
+            check_zext(source_type, target_type)?;
+            builder.push_instruction(Instruction::ZeroExtend {
+                result,
+                source_type,
+                target_type,
+                value,
+            })
         })
     }
 
@@ -44,12 +47,14 @@ impl<'a> IRBuilder<'a> {
         target_type: PrimitiveType,
         value: Value<'a>,
     ) -> &mut Self {
-        check_sext(source_type, target_type);
-        self.inst(Instruction::SignExtend {
-            result,
-            source_type,
-            target_type,
-            value,
+        self.step(|builder| {
+            check_sext(source_type, target_type)?;
+            builder.push_instruction(Instruction::SignExtend {
+                result,
+                source_type,
+                target_type,
+                value,
+            })
         })
     }
 
@@ -64,12 +69,14 @@ impl<'a> IRBuilder<'a> {
         target_type: PrimitiveType,
         value: Value<'a>,
     ) -> &mut Self {
-        check_trunc(source_type, target_type);
-        self.inst(Instruction::Trunc {
-            result,
-            source_type,
-            target_type,
-            value,
+        self.step(|builder| {
+            check_trunc(source_type, target_type)?;
+            builder.push_instruction(Instruction::Trunc {
+                result,
+                source_type,
+                target_type,
+                value,
+            })
         })
     }
 
@@ -84,12 +91,14 @@ impl<'a> IRBuilder<'a> {
         target_type: PrimitiveType,
         value: Value<'a>,
     ) -> &mut Self {
-        check_bitcast(source_type, target_type);
-        self.inst(Instruction::Bitcast {
-            result,
-            source_type,
-            target_type,
-            value,
+        self.step(|builder| {
+            check_bitcast(source_type, target_type)?;
+            builder.push_instruction(Instruction::Bitcast {
+                result,
+                source_type,
+                target_type,
+                value,
+            })
         })
     }
 
@@ -125,19 +134,25 @@ impl<'a> IRBuilder<'a> {
         target_type: PrimitiveType,
         value: Value<'a>,
     ) -> &mut Self {
-        let signed = integer_signedness(source_type).unwrap_or_else(|| {
-            panic!("inttofp source must be an integer type, found {source_type}")
-        });
-        assert!(
-            matches!(target_type, PrimitiveType::F32 | PrimitiveType::F64),
-            "inttofp target must be f32 or f64, found {target_type}"
-        );
-        self.inst(Instruction::IntToFloat {
-            result,
-            signed,
-            source_type,
-            target_type,
-            value,
+        self.step(|builder| {
+            let signed = integer_signedness(source_type).ok_or_else(|| {
+                BuildError::new(
+                    BuildErrorKind::InvalidType,
+                    format!("inttofp source must be an integer type, found {source_type}"),
+                )
+            })?;
+            require(
+                matches!(target_type, PrimitiveType::F32 | PrimitiveType::F64),
+                BuildErrorKind::InvalidType,
+                || format!("inttofp target must be f32 or f64, found {target_type}"),
+            )?;
+            builder.push_instruction(Instruction::IntToFloat {
+                result,
+                signed,
+                source_type,
+                target_type,
+                value,
+            })
         })
     }
 
@@ -156,19 +171,25 @@ impl<'a> IRBuilder<'a> {
         target_type: PrimitiveType,
         value: Value<'a>,
     ) -> &mut Self {
-        assert!(
-            matches!(source_type, PrimitiveType::F32 | PrimitiveType::F64),
-            "fptoint source must be f32 or f64, found {source_type}"
-        );
-        let signed = integer_signedness(target_type).unwrap_or_else(|| {
-            panic!("fptoint target must be an integer type, found {target_type}")
-        });
-        self.inst(Instruction::FloatToInt {
-            result,
-            signed,
-            source_type,
-            target_type,
-            value,
+        self.step(|builder| {
+            require(
+                matches!(source_type, PrimitiveType::F32 | PrimitiveType::F64),
+                BuildErrorKind::InvalidType,
+                || format!("fptoint source must be f32 or f64, found {source_type}"),
+            )?;
+            let signed = integer_signedness(target_type).ok_or_else(|| {
+                BuildError::new(
+                    BuildErrorKind::InvalidType,
+                    format!("fptoint target must be an integer type, found {target_type}"),
+                )
+            })?;
+            builder.push_instruction(Instruction::FloatToInt {
+                result,
+                signed,
+                source_type,
+                target_type,
+                value,
+            })
         })
     }
 
@@ -183,18 +204,26 @@ impl<'a> IRBuilder<'a> {
         target_type: PrimitiveType,
         value: Value<'a>,
     ) -> &mut Self {
-        assert!(
-            matches!(
-                (source_type, target_type),
-                (PrimitiveType::F32, PrimitiveType::F64) | (PrimitiveType::F64, PrimitiveType::F32)
-            ),
-            "fpcast converts between f32 and f64, found {source_type} to {target_type}"
-        );
-        self.inst(Instruction::FloatConvert {
-            result,
-            source_type,
-            target_type,
-            value,
+        self.step(|builder| {
+            require(
+                matches!(
+                    (source_type, target_type),
+                    (PrimitiveType::F32, PrimitiveType::F64)
+                        | (PrimitiveType::F64, PrimitiveType::F32)
+                ),
+                BuildErrorKind::InvalidType,
+                || {
+                    format!(
+                        "fpcast converts between f32 and f64, found {source_type} to {target_type}"
+                    )
+                },
+            )?;
+            builder.push_instruction(Instruction::FloatConvert {
+                result,
+                source_type,
+                target_type,
+                value,
+            })
         })
     }
 }

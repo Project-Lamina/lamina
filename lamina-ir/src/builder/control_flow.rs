@@ -4,7 +4,7 @@
 //! operations in the IR builder API.
 
 use crate::{
-    builder::IRBuilder,
+    builder::{BuildErrorKind, IRBuilder, require},
     instruction::Instruction,
     types::{Literal, PrimitiveType, Type, Value},
 };
@@ -74,11 +74,18 @@ impl<'a> IRBuilder<'a> {
     /// # Panics
     /// Panics unless `ty` is a primitive type. Aggregates move through memory one scalar at a time.
     pub fn copy(&mut self, result: &'a str, ty: Type<'a>, value: Value<'a>) -> &mut Self {
-        assert!(
-            matches!(ty, Type::Primitive(_)),
-            "copy moves one scalar value, found {ty}; move an aggregate through memory with getfieldptr and load/store"
-        );
-        self.inst(Instruction::Copy { result, ty, value })
+        self.step(|builder| {
+            require(
+                matches!(ty, Type::Primitive(_)),
+                BuildErrorKind::InvalidType,
+                || {
+                    format!(
+                        "copy moves one scalar value, found {ty}; move an aggregate through memory with getfieldptr and load/store"
+                    )
+                },
+            )?;
+            builder.push_instruction(Instruction::Copy { result, ty, value })
+        })
     }
 
     /// Creates a function call whose arguments are typed by the callee's signature.
@@ -127,19 +134,22 @@ impl<'a> IRBuilder<'a> {
         args: Vec<(Type<'a>, Value<'a>)>,
         variadic_fixed: Option<usize>,
     ) -> &mut Self {
-        if let Some(fixed) = variadic_fixed {
-            assert!(
-                fixed <= args.len(),
-                "callptr variadic_fixed ({fixed}) exceeds the argument count ({})",
-                args.len()
-            );
-        }
-        self.inst(Instruction::CallIndirect {
-            result,
-            target,
-            args,
-            variadic_fixed,
-            return_type,
+        self.step(|builder| {
+            if let Some(fixed) = variadic_fixed {
+                require(fixed <= args.len(), BuildErrorKind::InvalidArgument, || {
+                    format!(
+                        "callptr variadic_fixed ({fixed}) exceeds the argument count ({})",
+                        args.len()
+                    )
+                })?;
+            }
+            builder.push_instruction(Instruction::CallIndirect {
+                result,
+                target,
+                args,
+                variadic_fixed,
+                return_type,
+            })
         })
     }
 }

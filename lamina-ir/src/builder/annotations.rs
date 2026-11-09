@@ -5,7 +5,10 @@
 
 #[cfg(feature = "nightly")]
 use crate::module::ModuleAnnotation;
-use crate::{builder::IRBuilder, function::FunctionAnnotation};
+use crate::{
+    builder::{BuildError, BuildErrorKind, IRBuilder, require},
+    function::FunctionAnnotation,
+};
 
 impl<'a> IRBuilder<'a> {
     /// Adds a function annotation to the current function.
@@ -13,28 +16,38 @@ impl<'a> IRBuilder<'a> {
     /// Panics when the annotation has no text form, is already applied, or conflicts with
     /// an annotation already applied.
     pub fn annotate(&mut self, annotation: FunctionAnnotation) -> &mut Self {
-        assert!(
-            has_text_form(&annotation),
-            "{annotation} has no text form in Lamina IR; use one of the annotations the text IR lists"
-        );
-        let function = self.open_function();
-        assert!(
-            !function.annotations.contains(&annotation),
-            "{annotation} is applied twice to '@{}'",
-            function.name
-        );
-        if let Some(other) = function
-            .annotations
-            .iter()
-            .find(|other| annotations_conflict(other, &annotation))
-        {
-            panic!(
-                "{annotation} and {other} cannot be used together on '@{}'",
-                function.name
-            );
-        }
-        function.annotations.push(annotation);
-        self
+        self.step(|builder| {
+            require(
+                has_text_form(&annotation),
+                BuildErrorKind::InvalidAnnotation,
+                || {
+                    format!(
+                        "{annotation} has no text form in Lamina IR; use one of the annotations the text IR lists"
+                    )
+                },
+            )?;
+            let function = builder.open_function()?;
+            require(
+                !function.annotations.contains(&annotation),
+                BuildErrorKind::DuplicateAnnotation,
+                || format!("{annotation} is applied twice to '@{}'", function.name),
+            )?;
+            if let Some(other) = function
+                .annotations
+                .iter()
+                .find(|other| annotations_conflict(other, &annotation))
+            {
+                return Err(BuildError::new(
+                    BuildErrorKind::ConflictingAnnotation,
+                    format!(
+                    "{annotation} and {other} cannot be used together on '@{}'",
+                        function.name
+                    ),
+                ));
+            }
+            function.annotations.push(annotation);
+            Ok(())
+        })
     }
 
     /// Adds the `@inline` annotation.
@@ -104,8 +117,10 @@ impl<'a> IRBuilder<'a> {
 
     #[cfg(feature = "nightly")]
     pub fn annotate_module(&mut self, annotation: ModuleAnnotation) -> &mut Self {
-        self.module.annotations.push(annotation);
-        self
+        self.step(|builder| {
+            builder.module.annotations.push(annotation);
+            Ok(())
+        })
     }
 
     #[cfg(feature = "nightly")]

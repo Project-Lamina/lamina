@@ -1,6 +1,9 @@
-//! Shape rules shared by the IR builders. Each check panics with the rule the text parser enforces.
+//! Shape rules shared by the IR builders. Each check fails with the rule the text parser enforces.
 
-use crate::types::PrimitiveType;
+use crate::{
+    builder::{BuildError, BuildErrorKind, require},
+    types::PrimitiveType,
+};
 
 pub(crate) fn is_signed(ty: PrimitiveType) -> bool {
     matches!(
@@ -50,58 +53,97 @@ pub(crate) fn integer_signedness(ty: PrimitiveType) -> Option<bool> {
     }
 }
 
-pub(crate) fn check_zext(source: PrimitiveType, target: PrimitiveType) {
-    assert!(
-        !is_signed(source),
-        "zext zero-extends an unsigned or bool source, found {source}; use sext for a signed source"
-    );
-    check_extend(source, target);
+/// Panics with the error when a check failed, for the owned builder, which has no fallible mode.
+pub(crate) fn enforce(check: Result<(), BuildError>) {
+    if let Err(error) = check {
+        panic!("{error}");
+    }
 }
 
-pub(crate) fn check_sext(source: PrimitiveType, target: PrimitiveType) {
-    assert!(
-        is_signed(source),
-        "sext sign-extends a signed source, found {source}; use zext for an unsigned or bool source"
-    );
-    check_extend(source, target);
+pub(crate) fn check_zext(source: PrimitiveType, target: PrimitiveType) -> Result<(), BuildError> {
+    require(!is_signed(source), BuildErrorKind::InvalidType, || {
+        format!(
+            "zext zero-extends an unsigned or bool source, found {source}; use sext for a signed source"
+        )
+    })?;
+    check_extend(source, target)
 }
 
-fn check_extend(source: PrimitiveType, target: PrimitiveType) {
-    let source_bits = integer_bits(source)
-        .unwrap_or_else(|| panic!("extend source must be an integer or bool, found {source}"));
+pub(crate) fn check_sext(source: PrimitiveType, target: PrimitiveType) -> Result<(), BuildError> {
+    require(is_signed(source), BuildErrorKind::InvalidType, || {
+        format!(
+            "sext sign-extends a signed source, found {source}; use zext for an unsigned or bool source"
+        )
+    })?;
+    check_extend(source, target)
+}
+
+fn check_extend(source: PrimitiveType, target: PrimitiveType) -> Result<(), BuildError> {
+    let source_bits = integer_bits(source).ok_or_else(|| {
+        BuildError::new(
+            BuildErrorKind::InvalidType,
+            format!("extend source must be an integer or bool, found {source}"),
+        )
+    })?;
     let target_bits = match target {
         PrimitiveType::Bool => None,
         _ => integer_bits(target),
     }
-    .unwrap_or_else(|| panic!("extend target must be an integer, found {target}"));
-    assert!(
+    .ok_or_else(|| {
+        BuildError::new(
+            BuildErrorKind::InvalidType,
+            format!("extend target must be an integer, found {target}"),
+        )
+    })?;
+    require(
         target_bits > source_bits,
-        "extend from {source} to {target} must widen; use trunc to narrow"
-    );
+        BuildErrorKind::InvalidType,
+        || format!("extend from {source} to {target} must widen; use trunc to narrow"),
+    )
 }
 
-pub(crate) fn check_trunc(source: PrimitiveType, target: PrimitiveType) {
+pub(crate) fn check_trunc(source: PrimitiveType, target: PrimitiveType) -> Result<(), BuildError> {
     let source_bits = match source {
         PrimitiveType::Bool => None,
         _ => integer_bits(source),
     }
-    .unwrap_or_else(|| panic!("trunc source must be an integer, found {source}"));
+    .ok_or_else(|| {
+        BuildError::new(
+            BuildErrorKind::InvalidType,
+            format!("trunc source must be an integer, found {source}"),
+        )
+    })?;
     let target_bits = match target {
         PrimitiveType::Bool => None,
         _ => integer_bits(target),
     }
-    .unwrap_or_else(|| panic!("trunc target must be an integer, found {target}"));
-    assert!(
+    .ok_or_else(|| {
+        BuildError::new(
+            BuildErrorKind::InvalidType,
+            format!("trunc target must be an integer, found {target}"),
+        )
+    })?;
+    require(
         target_bits < source_bits,
-        "trunc from {source} to {target} must narrow; use extend to widen"
-    );
+        BuildErrorKind::InvalidType,
+        || format!("trunc from {source} to {target} must narrow; use extend to widen"),
+    )
 }
 
-pub(crate) fn check_bitcast(source: PrimitiveType, target: PrimitiveType) {
+pub(crate) fn check_bitcast(
+    source: PrimitiveType,
+    target: PrimitiveType,
+) -> Result<(), BuildError> {
     if let (Some(source_bits), Some(target_bits)) = (scalar_bits(source), scalar_bits(target)) {
-        assert!(
+        require(
             source_bits == target_bits,
-            "bitcast reinterprets equal widths, found {source} ({source_bits} bits) to {target} ({target_bits} bits)"
-        );
+            BuildErrorKind::InvalidType,
+            || {
+                format!(
+                    "bitcast reinterprets equal widths, found {source} ({source_bits} bits) to {target} ({target_bits} bits)"
+                )
+            },
+        )?;
     }
+    Ok(())
 }

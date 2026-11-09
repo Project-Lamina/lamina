@@ -25,7 +25,7 @@ pub mod module;
 pub mod owned;
 pub mod types;
 
-pub use builder::IRBuilder;
+pub use builder::{BuildError, BuildErrorKind, IRBuilder};
 pub use calls::value_types;
 pub use function::{
     BasicBlock, Function, FunctionAnnotation, FunctionParameter, FunctionSignature, SourceLoc,

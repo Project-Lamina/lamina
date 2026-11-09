@@ -4,7 +4,7 @@
 //! and managing function signatures in the IR builder API.
 
 use crate::{
-    builder::{IRBuilder, PendingFunction},
+    builder::{BuildErrorKind, IRBuilder, PendingFunction, require},
     function::{FunctionAnnotation, FunctionParameter, FunctionSignature, VariableAnnotation},
     types::Type,
 };
@@ -68,21 +68,24 @@ impl<'a> IRBuilder<'a> {
             is_extern: true,
             blocks: vec![],
             entry: None,
-        });
-        self
+        })
     }
 
-    fn push_function(&mut self, function: PendingFunction<'a>) {
-        assert!(
-            self.functions
-                .iter()
-                .all(|other| other.name != function.name),
-            "function '@{}' is already defined",
-            function.name
-        );
-        self.functions.push(function);
-        self.current_function = Some(self.functions.len() - 1);
-        self.current_block = None;
+    fn push_function(&mut self, function: PendingFunction<'a>) -> &mut Self {
+        self.step(|builder| {
+            require(
+                builder
+                    .functions
+                    .iter()
+                    .all(|other| other.name != function.name),
+                BuildErrorKind::DuplicateFunction,
+                || format!("function '@{}' is already defined", function.name),
+            )?;
+            builder.functions.push(function);
+            builder.current_function = Some(builder.functions.len() - 1);
+            builder.current_block = None;
+            Ok(())
+        })
     }
 
     /// Creates a parameter for `function_with_params` or `external_function`.

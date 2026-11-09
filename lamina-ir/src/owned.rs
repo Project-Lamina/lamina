@@ -7,7 +7,7 @@
 use std::fmt;
 
 use crate::{
-    builder::checks::{check_bitcast, check_sext, check_trunc, check_zext},
+    builder::checks::{check_bitcast, check_sext, check_trunc, check_zext, enforce},
     instruction::{BinaryOp, CmpOp},
     types::PrimitiveType,
 };
@@ -852,7 +852,7 @@ impl OwnedIRBuilder {
         target: PrimitiveType,
         value: &OwnedValue,
     ) -> &mut Self {
-        check_zext(source, target);
+        enforce(check_zext(source, target));
         let t = format!(
             "%{} = extend.{}.{} {}",
             result.as_ref(),
@@ -875,7 +875,7 @@ impl OwnedIRBuilder {
         target: PrimitiveType,
         value: &OwnedValue,
     ) -> &mut Self {
-        check_sext(source, target);
+        enforce(check_sext(source, target));
         let t = format!(
             "%{} = extend.{}.{} {}",
             result.as_ref(),
@@ -898,7 +898,7 @@ impl OwnedIRBuilder {
         target: PrimitiveType,
         value: &OwnedValue,
     ) -> &mut Self {
-        check_trunc(source, target);
+        enforce(check_trunc(source, target));
         let t = format!(
             "%{} = trunc.{}.{} {}",
             result.as_ref(),
@@ -921,7 +921,7 @@ impl OwnedIRBuilder {
         target: PrimitiveType,
         value: &OwnedValue,
     ) -> &mut Self {
-        check_bitcast(source, target);
+        enforce(check_bitcast(source, target));
         let t = format!(
             "%{} = bitcast.{}.{} {}",
             result.as_ref(),

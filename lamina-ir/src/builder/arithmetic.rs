@@ -5,7 +5,7 @@
 //! intrinsics (population count, leading and trailing zeros, byte swap, rotation).
 
 use crate::{
-    builder::IRBuilder,
+    builder::{BuildErrorKind, IRBuilder, require},
     instruction::{BinaryOp, CmpOp, Instruction, OverflowOp, UnaryOp},
     types::{PrimitiveType, Value},
 };
@@ -81,15 +81,18 @@ impl<'a> IRBuilder<'a> {
     /// # Panics
     /// Panics if `ty` is `f32` or `f64`.
     pub fn not(&mut self, result: &'a str, ty: PrimitiveType, value: Value<'a>) -> &mut Self {
-        assert!(
-            !matches!(ty, PrimitiveType::F32 | PrimitiveType::F64),
-            "not takes an integer type, found {ty}"
-        );
-        self.inst(Instruction::Unary {
-            op: UnaryOp::Not,
-            result,
-            ty,
-            value,
+        self.step(|builder| {
+            require(
+                !matches!(ty, PrimitiveType::F32 | PrimitiveType::F64),
+                BuildErrorKind::InvalidType,
+                || format!("not takes an integer type, found {ty}"),
+            )?;
+            builder.push_instruction(Instruction::Unary {
+                op: UnaryOp::Not,
+                result,
+                ty,
+                value,
+            })
         })
     }
 
@@ -98,15 +101,18 @@ impl<'a> IRBuilder<'a> {
     /// # Panics
     /// Panics if `ty` is not `f32` or `f64`.
     pub fn sqrt(&mut self, result: &'a str, ty: PrimitiveType, value: Value<'a>) -> &mut Self {
-        assert!(
-            matches!(ty, PrimitiveType::F32 | PrimitiveType::F64),
-            "sqrt takes f32 or f64, found {ty}"
-        );
-        self.inst(Instruction::Unary {
-            op: UnaryOp::Sqrt,
-            result,
-            ty,
-            value,
+        self.step(|builder| {
+            require(
+                matches!(ty, PrimitiveType::F32 | PrimitiveType::F64),
+                BuildErrorKind::InvalidType,
+                || format!("sqrt takes f32 or f64, found {ty}"),
+            )?;
+            builder.push_instruction(Instruction::Unary {
+                op: UnaryOp::Sqrt,
+                result,
+                ty,
+                value,
+            })
         })
     }
 
@@ -178,12 +184,16 @@ impl<'a> IRBuilder<'a> {
         ty: PrimitiveType,
         value: Value<'a>,
     ) -> &mut Self {
-        assert!(is_integer(ty), "{name} takes an integer type, found {ty}");
-        self.inst(Instruction::Unary {
-            op,
-            result,
-            ty,
-            value,
+        self.step(|builder| {
+            require(is_integer(ty), BuildErrorKind::InvalidType, || {
+                format!("{name} takes an integer type, found {ty}")
+            })?;
+            builder.push_instruction(Instruction::Unary {
+                op,
+                result,
+                ty,
+                value,
+            })
         })
     }
 
@@ -196,13 +206,17 @@ impl<'a> IRBuilder<'a> {
         value: Value<'a>,
         count: Value<'a>,
     ) -> &mut Self {
-        assert!(is_integer(ty), "{name} takes an integer type, found {ty}");
-        self.inst(Instruction::Binary {
-            op,
-            result,
-            ty,
-            lhs: value,
-            rhs: count,
+        self.step(|builder| {
+            require(is_integer(ty), BuildErrorKind::InvalidType, || {
+                format!("{name} takes an integer type, found {ty}")
+            })?;
+            builder.push_instruction(Instruction::Binary {
+                op,
+                result,
+                ty,
+                lhs: value,
+                rhs: count,
+            })
         })
     }
 }

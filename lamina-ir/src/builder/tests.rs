@@ -4,7 +4,7 @@ mod tests {
     #[cfg(feature = "nightly")]
     use crate::module::ModuleAnnotation;
     use crate::{
-        builder::{IRBuilder, values::*},
+        builder::{BuildError, BuildErrorKind, IRBuilder, values::*},
         function::FunctionAnnotation,
         instruction::{AllocType, BinaryOp, CmpOp, Instruction, UnaryOp},
         module::{GlobalDeclaration, GlobalInit, GlobalVisibility},
@@ -1833,5 +1833,259 @@ mod tests {
     fn test_string_global_rejects_quote() {
         let mut builder = IRBuilder::new();
         builder.declare_string_global("quoted", "say \"hi\"");
+    }
+
+    fn misuse(builder: &mut IRBuilder<'_>) -> BuildError {
+        match builder.try_build() {
+            Ok(_) => panic!("expected the builder to record a misuse"),
+            Err(error) => error,
+        }
+    }
+
+    #[test]
+    fn test_fallible_instruction_without_function() {
+        let mut builder = IRBuilder::new_fallible();
+        builder.ret_void();
+        assert_eq!(misuse(&mut builder).kind(), BuildErrorKind::NoOpenFunction);
+    }
+
+    #[test]
+    fn test_fallible_extern_function_body() {
+        let mut builder = IRBuilder::new_fallible();
+        builder
+            .external_function("printf", vec![], Type::Void)
+            .ret_void();
+        assert_eq!(
+            misuse(&mut builder).kind(),
+            BuildErrorKind::ExternFunctionBody
+        );
+    }
+
+    #[test]
+    fn test_fallible_instruction_after_terminator() {
+        let mut builder = IRBuilder::new_fallible();
+        builder.function("f", Type::Void).ret_void().ret_void();
+        assert_eq!(misuse(&mut builder).kind(), BuildErrorKind::AfterTerminator);
+    }
+
+    #[test]
+    fn test_fallible_duplicate_function_is_not_pushed() {
+        let mut builder = IRBuilder::new_fallible();
+        builder
+            .function("f", Type::Void)
+            .ret_void()
+            .function("f", Type::Void)
+            .ret_void();
+        assert_eq!(builder.functions.len(), 1);
+        assert_eq!(
+            misuse(&mut builder).kind(),
+            BuildErrorKind::DuplicateFunction
+        );
+    }
+
+    #[test]
+    fn test_fallible_duplicate_block() {
+        let mut builder = IRBuilder::new_fallible();
+        builder.function("f", Type::Void).block("entry");
+        assert_eq!(misuse(&mut builder).kind(), BuildErrorKind::DuplicateBlock);
+    }
+
+    #[test]
+    fn test_fallible_duplicate_type() {
+        let mut builder = IRBuilder::new_fallible();
+        builder
+            .declare_type("T", Type::Primitive(PrimitiveType::I32))
+            .declare_type("T", Type::Primitive(PrimitiveType::I64));
+        assert_eq!(misuse(&mut builder).kind(), BuildErrorKind::DuplicateType);
+    }
+
+    #[test]
+    fn test_fallible_duplicate_global() {
+        let mut builder = IRBuilder::new_fallible();
+        builder
+            .declare_string_global("g", "a")
+            .declare_string_global("g", "b");
+        assert_eq!(misuse(&mut builder).kind(), BuildErrorKind::DuplicateGlobal);
+    }
+
+    #[test]
+    fn test_fallible_invalid_global() {
+        let mut builder = IRBuilder::new_fallible();
+        builder.declare_global(GlobalDeclaration {
+            name: "secret",
+            ty: Type::Primitive(PrimitiveType::I64),
+            initializer: None,
+            exported: true,
+            visibility: Some(GlobalVisibility::Internal),
+            weak: false,
+            align: None,
+            thread_local: None,
+        });
+        assert_eq!(misuse(&mut builder).kind(), BuildErrorKind::InvalidGlobal);
+    }
+
+    #[test]
+    fn test_fallible_duplicate_annotation() {
+        let mut builder = IRBuilder::new_fallible();
+        builder.function("f", Type::Void).inline().inline();
+        assert_eq!(
+            misuse(&mut builder).kind(),
+            BuildErrorKind::DuplicateAnnotation
+        );
+    }
+
+    #[test]
+    fn test_fallible_annotation_without_text_form() {
+        let mut builder = IRBuilder::new_fallible();
+        builder
+            .function("f", Type::Void)
+            .annotate(FunctionAnnotation::Deprecated(None));
+        assert_eq!(
+            misuse(&mut builder).kind(),
+            BuildErrorKind::InvalidAnnotation
+        );
+    }
+
+    #[test]
+    fn test_fallible_conflicting_annotations() {
+        let mut builder = IRBuilder::new_fallible();
+        builder
+            .function("f", Type::Void)
+            .inline()
+            .annotate(FunctionAnnotation::NoInline);
+        assert_eq!(
+            misuse(&mut builder).kind(),
+            BuildErrorKind::ConflictingAnnotation
+        );
+    }
+
+    #[test]
+    fn test_fallible_string_literal_in_instruction() {
+        let mut builder = IRBuilder::new_fallible();
+        builder
+            .function("f", Type::Void)
+            .call(None, "puts", vec![string("hi")])
+            .ret_void();
+        assert_eq!(
+            misuse(&mut builder).kind(),
+            BuildErrorKind::StringLiteralOperand
+        );
+    }
+
+    #[test]
+    fn test_fallible_invalid_type() {
+        let mut builder = IRBuilder::new_fallible();
+        builder
+            .function("f", Type::Void)
+            .zext("r", PrimitiveType::I32, PrimitiveType::I64, i32(1))
+            .ret_void();
+        assert_eq!(misuse(&mut builder).kind(), BuildErrorKind::InvalidType);
+    }
+
+    #[test]
+    fn test_fallible_invalid_argument() {
+        let mut builder = IRBuilder::new_fallible();
+        builder
+            .function("f", Type::Void)
+            .callptr(
+                None,
+                Type::Void,
+                var("fp"),
+                vec![(Type::Primitive(PrimitiveType::I32), i32(1))],
+                Some(2),
+            )
+            .ret_void();
+        assert_eq!(misuse(&mut builder).kind(), BuildErrorKind::InvalidArgument);
+    }
+
+    #[test]
+    fn test_fallible_unterminated_block() {
+        let mut builder = IRBuilder::new_fallible();
+        builder.function("f", Type::Void).binary(
+            BinaryOp::Add,
+            "r",
+            PrimitiveType::I32,
+            i32(1),
+            i32(2),
+        );
+        assert_eq!(
+            misuse(&mut builder).kind(),
+            BuildErrorKind::UnterminatedBlock
+        );
+    }
+
+    #[test]
+    fn test_fallible_undefined_entry_block() {
+        let mut builder = IRBuilder::new_fallible();
+        builder
+            .function("f", Type::Void)
+            .set_entry_block("missing")
+            .ret_void();
+        assert_eq!(
+            misuse(&mut builder).kind(),
+            BuildErrorKind::UndefinedEntryBlock
+        );
+    }
+
+    #[test]
+    fn test_fallible_keeps_first_error_and_ignores_later_calls() {
+        let mut builder = IRBuilder::new_fallible();
+        builder
+            .function("f", Type::Void)
+            .ret_void()
+            .ret_void()
+            .function("g", Type::Void)
+            .ret_void();
+        assert_eq!(builder.functions.len(), 1);
+        let error = misuse(&mut builder);
+        assert_eq!(error.kind(), BuildErrorKind::AfterTerminator);
+        assert_eq!(
+            error.to_string(),
+            "block 'entry' already ends with a terminator; start a new block with block()"
+        );
+        assert_eq!(error.message(), error.to_string());
+    }
+
+    #[test]
+    fn test_fallible_valid_module_matches_build() {
+        let make = |builder: &mut IRBuilder<'static>| {
+            builder
+                .declare_string_global("msg", "hi")
+                .function("f", Type::Void)
+                .ret_void();
+        };
+        let mut fallible = IRBuilder::new_fallible();
+        make(&mut fallible);
+        let mut plain = IRBuilder::new();
+        make(&mut plain);
+        let expected = plain.build();
+        let Ok(module) = fallible.try_build() else {
+            panic!("a valid module builds");
+        };
+        assert_eq!(module, expected);
+    }
+
+    #[test]
+    fn test_try_build_on_default_builder_reports_unterminated_block() {
+        let mut builder = IRBuilder::new();
+        builder.function("f", Type::Void).binary(
+            BinaryOp::Add,
+            "r",
+            PrimitiveType::I32,
+            i32(1),
+            i32(2),
+        );
+        assert_eq!(
+            misuse(&mut builder).kind(),
+            BuildErrorKind::UnterminatedBlock
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "already ends with a terminator")]
+    fn test_build_on_fallible_builder_panics_with_recorded_error() {
+        let mut builder = IRBuilder::new_fallible();
+        builder.function("f", Type::Void).ret_void().ret_void();
+        builder.build();
     }
 }
