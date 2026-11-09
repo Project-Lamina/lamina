@@ -92,15 +92,25 @@ def runner(tmp_path, monkeypatch):
 
 def test_failing_testcase_exits_zero_with_report_only(runner, capsys):
     runner.setattr(run_tests, "compile_and_run_test", lambda *args, **kwargs: (False, "boom"))
-    run_tests.run_tests(report_only=True)
+    assert run_tests.run_levels(report_only=True) == 0
     assert "1 failed" in capsys.readouterr().out
 
 
 def test_failing_testcase_exits_nonzero_without_report_only(runner):
     runner.setattr(run_tests, "compile_and_run_test", lambda *args, **kwargs: (False, "boom"))
-    with pytest.raises(SystemExit) as exit_info:
-        run_tests.run_tests()
-    assert exit_info.value.code == 1
+    assert run_tests.run_levels() == 1
+
+
+def test_every_opt_level_runs_the_whole_suite(runner):
+    seen = []
+
+    def record(test_path, use_mir=False, target=None, opt_level=None):
+        seen.append(opt_level)
+        return True, ["ok"]
+
+    runner.setattr(run_tests, "compile_and_run_test", record)
+    assert run_tests.run_levels(opt_level="all") == 0
+    assert seen == [0, 1, 2, 3]
 
 
 def test_missing_expected_output_counts_as_a_failure(runner, capsys):
@@ -110,9 +120,7 @@ def test_missing_expected_output_counts_as_a_failure(runner, capsys):
         "compile_and_run_test",
         lambda *args, **kwargs: pytest.fail("a testcase without expectations was run"),
     )
-    with pytest.raises(SystemExit) as exit_info:
-        run_tests.run_tests()
-    assert exit_info.value.code == 1
+    assert run_tests.run_levels() == 1
     out = capsys.readouterr().out
     assert re.search(r"FAILED fake\.lamina: No expected output found", out)
     assert "0/1 passed, 1 failed" in out

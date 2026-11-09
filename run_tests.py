@@ -488,7 +488,7 @@ def run_tests(use_mir=False, target=None, report_only=False, opt_level=None):
         if problem:
             print_colored(f"⏭️  Skipping {target} run: {problem}", Colors.YELLOW)
             print_colored("   Install the cross gcc and qemu-user, or drop --target.", Colors.YELLOW)
-            return
+            return 0
         mode = f"{mode}, target {target}"
     byteorder = CROSS_TARGETS[target]['byteorder'] if target else sys.byteorder
 
@@ -559,8 +559,18 @@ def run_tests(use_mir=False, target=None, report_only=False, opt_level=None):
         print_colored("Failed tests:", Colors.RED + Colors.BOLD)
         for name, reason in failures:
             print_colored(f"  {name}: {reason}", Colors.RED)
-        if failed > 0 and not report_only:
-            sys.exit(1)
+    return failed
+
+def run_levels(use_mir=False, target=None, report_only=False, opt_level=None):
+    """Run the suite once per requested level and return the process exit code."""
+    if opt_level is None:
+        levels = [None]
+    elif str(opt_level) == 'all':
+        levels = [0, 1, 2, 3]
+    else:
+        levels = [int(opt_level)]
+    failed = sum(run_tests(use_mir, target, report_only, level) for level in levels)
+    return 1 if failed and not report_only else 0
 
 def list_tests():
     """List available test cases"""
@@ -637,11 +647,11 @@ if __name__ == "__main__":
     parser.add_argument('--target', choices=sorted(CROSS_TARGETS),
                         help='Compile for a cross target and run under its emulator; '
                              'skipped with a message when the toolchain is absent')
-    parser.add_argument('--opt-level', type=int, choices=[0, 1, 2, 3],
+    parser.add_argument('--opt-level', choices=['0', '1', '2', '3', 'all'],
                         help='Compile at this optimization level instead of the CLI '
                              'default; without it the suite never executes code built '
                              'by sroa, mem2reg, peephole, unrolling, CSE, the scheduler '
-                             'or rotation')
+                             'or rotation. "all" runs the whole suite once per level')
     parser.add_argument('--report-only', action='store_true',
                         help='Print the counts and exit 0 even when testcases fail, '
                              'for platforms whose backend is still incomplete')
@@ -653,4 +663,4 @@ if __name__ == "__main__":
     elif args.test:
         run_single_test(args.test, args.mir, args.target)
     else:
-        run_tests(args.mir, args.target, args.report_only, args.opt_level)
+        sys.exit(run_levels(args.mir, args.target, args.report_only, args.opt_level))
