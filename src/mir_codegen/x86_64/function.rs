@@ -1034,10 +1034,10 @@ fn home_aggregate_parameters<W: Write>(
         let Register::Virtual(slot) = &param.reg else {
             continue;
         };
+        // Nothing addresses an aggregate except through its frame slot, so a
+        // parameter without one is a parameter the body never reads.
         let Some(&base) = stack_slots.get(slot) else {
-            return Err(CodegenError::InvalidCodegenOptions(
-                "aggregate parameter has no frame slot".to_string(),
-            ));
+            continue;
         };
         let Some(aggregate) = param.aggregate else {
             continue;
@@ -1401,6 +1401,43 @@ mod global_regalloc_tests {
         path::Path,
         process::{self, Command},
     };
+
+    /// A parameter the body never reads still has to compile: the aggregate has no
+    /// frame slot at O1 and above, and there is nothing to home into one.
+    #[test]
+    fn an_aggregate_parameter_that_is_never_read_still_compiles() {
+        if !tools_available(&["as", "gcc", "timeout"]) {
+            return;
+        }
+        let directory = env::temp_dir().join(format!("lamina-unread-aggregate-{}", process::id()));
+        fs::create_dir_all(&directory).expect("create executable directory");
+        let source = directory.join("unread.lamina");
+        for shape in ["struct { a: i32, b: i32 }", "struct { a: f32, b: f32 }"] {
+            fs::write(
+                &source,
+                format!(
+                    "type !P = {shape}\n\
+                     fn @s(!P %v) -> i64 {{\nentry:\n  ret.i64 7\n}}\n\
+                     fn @main() -> i64 {{\nentry:\n  %p = stackalloc.!P\n  \
+                     %r = call @s(!P %p)\n  %c = add.i64 %r, 41\n  \
+                     %w = writebyte %c\n  ret.i64 0\n}}\n"
+                ),
+            )
+            .expect("write program");
+            for level in ["0", "1", "2", "3"] {
+                let executable = directory.join(format!("unread-{level}"));
+                compile(&source, &executable, &["--opt-level", level]).expect("compile program");
+                let output = Command::new("timeout")
+                    .arg("10")
+                    .arg(&executable)
+                    .output()
+                    .expect("run executable");
+                assert!(output.status.success(), "O{level} {shape}: {output:?}");
+                assert_eq!(output.stdout, b"0", "O{level} {shape}");
+            }
+        }
+        fs::remove_dir_all(directory).expect("remove executable directory");
+    }
 
     /// `unreachable` is a trap, not a hint: a program that reaches one dies on an
     /// illegal instruction instead of running on into whatever follows.
