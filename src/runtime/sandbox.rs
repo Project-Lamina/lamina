@@ -204,24 +204,18 @@ impl Sandbox {
         {
             // Compile to executable memory on the calling thread (compilation is
             // synchronous and does not run user code).
-            let memory = self
+            let compiled = self
                 .compiler
-                .compile(module, Some(function_name))
+                .compile_entry(module, function_name)
                 .map_err(|e| {
                     LaminaError::ValidationError(format!("Sandbox compilation failed: {e}"))
                 })?;
+            let memory = compiled.memory;
 
             // SAFETY: `memory` is kept alive for the entire duration of the
             // execution below; the function pointer is only used within this scope.
-            let fn_ptr: unsafe extern "C" fn() -> i64 = unsafe {
-                let raw = memory.code_start();
-                if raw.is_null() {
-                    return Err(LaminaError::ValidationError(
-                        "Sandbox: compiled function pointer is null".to_string(),
-                    ));
-                }
-                mem::transmute(raw)
-            };
+            let fn_ptr: unsafe extern "C" fn() -> i64 =
+                unsafe { mem::transmute(compiled.function_ptr) };
 
             match self.config.max_execution_time {
                 None => {

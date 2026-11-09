@@ -4,15 +4,19 @@
 
 #[cfg(feature = "encoder")]
 use crate::mir_codegen::validate_module_call_parameters;
-use crate::{error::LaminaError, mir::Module as MirModule};
+use crate::{
+    error::LaminaError,
+    mir::Module as MirModule,
+    runtime::{RuntimeResult, compile_to_runtime},
+};
 use lamina_platform::{TargetArchitecture, TargetOperatingSystem};
 use ras::{ExecutableMemory, RasRuntime};
 use std::mem;
 
 /// Runtime compiler for JIT compilation
 pub struct RuntimeCompiler {
-    #[cfg_attr(not(feature = "encoder"), allow(dead_code))] // Read when encoder feature is enabled
     target_arch: TargetArchitecture,
+    target_os: TargetOperatingSystem,
     #[allow(dead_code)] // Used when encoder feature is enabled
     runtime: RasRuntime,
 }
@@ -22,6 +26,7 @@ impl RuntimeCompiler {
     pub fn new(target_arch: TargetArchitecture, target_os: TargetOperatingSystem) -> Self {
         Self {
             target_arch,
+            target_os,
             runtime: RasRuntime::new(target_arch, target_os),
         }
     }
@@ -78,18 +83,26 @@ impl RuntimeCompiler {
         module: &MirModule,
         function_name: &str,
     ) -> Result<CompiledFunction<T>, LaminaError> {
-        let memory = self.compile(module, Some(function_name))?;
-        let ptr = memory.code_start();
-        if ptr.is_null() {
-            return Err(LaminaError::ValidationError(
-                "ExecutableMemory has null ptr".to_string(),
-            ));
-        }
-        let entry: unsafe extern "C" fn() -> T = unsafe { mem::transmute(ptr) };
+        let compiled = self.compile_entry(module, function_name)?;
+        let entry: unsafe extern "C" fn() -> T = unsafe { mem::transmute(compiled.function_ptr) };
         Ok(CompiledFunction {
-            _memory: memory,
+            _memory: compiled.memory,
             entry,
         })
+    }
+
+    /// Compile the whole module and resolve `function_name` to its entry point.
+    pub(crate) fn compile_entry(
+        &mut self,
+        module: &MirModule,
+        function_name: &str,
+    ) -> Result<RuntimeResult, LaminaError> {
+        compile_to_runtime(
+            module,
+            self.target_arch,
+            self.target_os,
+            Some(function_name),
+        )
     }
 }
 
@@ -168,6 +181,47 @@ mod tests {
 
         // SAFETY: same contract as above, and the handle still owns the mapping.
         assert_eq!(unsafe { handle.call() }, 42);
+    }
+
+    #[cfg(all(feature = "encoder", target_arch = "x86_64", target_os = "linux"))]
+    const TWO_FUNCTIONS: &str = r#"
+        fn @first() -> i64 {
+            entry:
+                ret.i64 1
+        }
+
+        fn @second() -> i64 {
+            entry:
+                ret.i64 2
+        }
+        "#;
+
+    #[cfg(all(feature = "encoder", target_arch = "x86_64", target_os = "linux"))]
+    #[test]
+    fn compile_function_enters_the_named_function() {
+        let ir_module = parse_module(TWO_FUNCTIONS).expect("parse");
+        let module = from_ir_x86_64(&ir_module, "jit_test").expect("lower");
+        let mut compiler = make_compiler();
+
+        for (name, expected) in [("@first", 1), ("@second", 2), ("second", 2)] {
+            // SAFETY: both functions take no arguments and return i64.
+            let handle =
+                unsafe { compiler.compile_function::<i64>(&module, name) }.expect("compile");
+            // SAFETY: same contract as above.
+            assert_eq!(unsafe { handle.call() }, expected, "entry {name}");
+        }
+    }
+
+    #[cfg(all(feature = "encoder", target_arch = "x86_64", target_os = "linux"))]
+    #[test]
+    fn compile_function_rejects_an_unknown_name() {
+        let ir_module = parse_module(TWO_FUNCTIONS).expect("parse");
+        let module = from_ir_x86_64(&ir_module, "jit_test").expect("lower");
+        let mut compiler = make_compiler();
+
+        // SAFETY: nothing is called; the lookup fails first.
+        let result = unsafe { compiler.compile_function::<i64>(&module, "@third") };
+        assert!(matches!(result, Err(LaminaError::ValidationError(_))));
     }
 
     #[cfg(not(feature = "encoder"))]

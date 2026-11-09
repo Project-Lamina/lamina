@@ -67,7 +67,7 @@ pub fn compile_to_runtime(
 
         // Find the function offset for the requested function
         let function_offset = if let Some(name) = _function_name {
-            let offset = function_offsets
+            let found = function_offsets
                 .get::<str>(name)
                 .or_else(|| {
                     if let Some(stripped) = name.strip_prefix('@') {
@@ -77,6 +77,15 @@ pub fn compile_to_runtime(
                     }
                 })
                 .copied();
+            let Some(offset) = found else {
+                let mut available: Vec<&str> =
+                    function_offsets.keys().map(String::as_str).collect();
+                available.sort_unstable();
+                return Err(LaminaError::ValidationError(format!(
+                    "JIT entry function '{name}' is not in the module (functions: {})",
+                    available.join(", ")
+                )));
+            };
             if jit_debug {
                 eprintln!(
                     "[JIT-DEBUG] Function '{}' offset: {:?}, available: {:?}",
@@ -85,7 +94,7 @@ pub fn compile_to_runtime(
                     function_offsets.keys().collect::<Vec<_>>()
                 );
             }
-            offset
+            Some(offset)
         } else {
             // If no function name specified, use the first function (offset 0)
             Some(0)
