@@ -609,12 +609,13 @@ mod tests {
         block.instructions.push(Located::from(Instruction::Jmp {
             target: "exit".into(),
         }));
+        let before = block.instructions.len();
         InstructionScheduling.schedule_block(&mut block, PointerWidth::Bits64, &HashSet::new());
         assert!(matches!(
             block.instructions.last().map(|i| &i.instr),
             Some(Instruction::Jmp { .. })
         ));
-        assert_eq!(block.instructions.len(), 41);
+        assert_eq!(block.instructions.len(), before);
     }
 
     #[test]

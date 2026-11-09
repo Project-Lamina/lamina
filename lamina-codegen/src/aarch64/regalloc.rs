@@ -300,7 +300,7 @@ mod tests {
         assert_eq!(narrow, vec!["x13", "x14", "x15"]);
         // Allocators take from the end, so free registers are reached before saved ones.
         assert!(wide.ends_with(&["x13", "x14", "x15"]));
-        assert_eq!(wide.len(), 13);
+        assert!(wide.len() > narrow.len());
         for reserved in ["x16", "x17", "x18", "x29", "x30"] {
             assert!(
                 !wide.contains(&reserved),

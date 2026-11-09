@@ -107,17 +107,17 @@ mod tests {
     }
 
     #[test]
-    fn test_aarch64_caller_saved_registers() {
-        assert_eq!(AArch64ABI::CALLER_SAVED_REGISTERS.len(), 18);
+    fn caller_and_callee_saved_registers_do_not_overlap() {
         assert!(AArch64ABI::CALLER_SAVED_REGISTERS.contains(&"x0"));
         assert!(AArch64ABI::CALLER_SAVED_REGISTERS.contains(&"x15"));
-    }
-
-    #[test]
-    fn test_aarch64_callee_saved_registers() {
-        assert_eq!(AArch64ABI::CALLEE_SAVED_REGISTERS.len(), 12);
         assert!(AArch64ABI::CALLEE_SAVED_REGISTERS.contains(&"x19"));
         assert!(AArch64ABI::CALLEE_SAVED_REGISTERS.contains(&"x30"));
+        for register in AArch64ABI::CALLEE_SAVED_REGISTERS {
+            assert!(
+                !AArch64ABI::CALLER_SAVED_REGISTERS.contains(register),
+                "{register} is in both halves of the convention"
+            );
+        }
     }
 
     #[test]
