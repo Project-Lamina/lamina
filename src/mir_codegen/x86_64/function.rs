@@ -1397,9 +1397,42 @@ mod global_regalloc_tests {
     };
     use std::{
         env, fs,
+        os::unix::process::ExitStatusExt,
         path::Path,
         process::{self, Command},
     };
+
+    /// `unreachable` is a trap, not a hint: a program that reaches one dies on an
+    /// illegal instruction instead of running on into whatever follows.
+    #[test]
+    fn a_program_that_reaches_unreachable_dies_on_an_illegal_instruction() {
+        if !tools_available(&["as", "gcc", "timeout"]) {
+            return;
+        }
+        let directory = env::temp_dir().join(format!("lamina-unreachable-{}", process::id()));
+        fs::create_dir_all(&directory).expect("create executable directory");
+        let source = directory.join("trap.lamina");
+        fs::write(
+            &source,
+            "@noinline\nfn @stop() -> i64 {\nentry:\n  unreachable\n}\n\nfn @main() -> i64 {\nentry:\n  %r = call @stop()\n  ret.i64 %r\n}\n",
+        )
+        .expect("write program");
+        for level in ["0", "1", "2", "3"] {
+            let executable = directory.join(format!("trap-{level}"));
+            compile(&source, &executable, &["--opt-level", level]).expect("compile program");
+            let output = Command::new("timeout")
+                .arg("10")
+                .arg(&executable)
+                .output()
+                .expect("run executable");
+            assert_eq!(
+                output.status.signal(),
+                Some(4),
+                "O{level} should die on SIGILL: {output:?}"
+            );
+        }
+        fs::remove_dir_all(directory).expect("remove executable directory");
+    }
 
     #[test]
     fn global_allocators_preserve_program_outputs() {
