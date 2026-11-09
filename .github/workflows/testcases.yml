@@ -235,4 +235,4 @@ jobs:
       - name: Cross-toolchain ABI agreement
         env:
           LAMINA_REQUIRE_CROSS_TOOLS: '1'
-        run: cargo test --test abi_crosscall
+        run: cargo test --lib abi_crosscall
