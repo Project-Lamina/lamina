@@ -210,7 +210,7 @@ A target is **done** when its output is run and checked against an expected resu
 The counts below come from `run_tests.py --target <name>`. It builds the testcase suite, runs it (under QEMU when the host is a different architecture) and compares the output with the expected files.
 
 **x86_64 (Intel/AMD 64-bit)**
-- `x86_64_linux`: Linux x86_64. Done. 194 of 194 testcases pass.
+- `x86_64_linux`: Linux x86_64. Done. 195 of 195 testcases pass, at every optimization level.
 - `x86_64_macos`: macOS x86_64 (Intel Macs). In progress.
 - `x86_64_windows`: Windows x86_64. Done. 194 of 194 testcases pass under wine.
 - `x86_64_unknown`: Generic x86_64 (ELF conventions). In progress.
