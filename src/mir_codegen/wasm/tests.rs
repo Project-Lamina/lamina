@@ -195,78 +195,84 @@ fn checked_arithmetic_reports_overflow_at_every_width() {
     }
 }
 
-#[test]
-fn distinct_stack_slots_in_one_frame_do_not_alias() {
-    let Some(stdout) = run_wasm_main(
+/// What each program is here to show, the program, the level it is built at and
+/// what it must print. Adding a behaviour is a row, not another copy of the
+/// compile-run-diff scaffolding.
+const WASM_PROGRAMS: &[(&str, &str, &str, u8, &str)] = &[
+    (
+        "distinct stack slots in one frame do not alias",
         "slots",
         "fn @main() -> i64 {\nentry:\n %p = stackalloc.i64\n %q = stackalloc.i64\n store.i64 %p, 11\n store.i64 %q, 22\n %x = load.i64 %p\n call @print_i64(%x)\n ret.i64 0\n}",
         0,
-    ) else {
-        return;
-    };
-    assert_eq!(stdout, "11\n0\n");
-}
-
-#[test]
-fn recursive_invocations_keep_their_own_stack_slots() {
-    let Some(stdout) = run_wasm_main(
+        "11\n0\n",
+    ),
+    (
+        "recursive invocations keep their own stack slots",
         "recursive",
         "fn @rec(i64 %n) -> i64 {\nentry:\n %p = stackalloc.i64\n store.i64 %p, %n\n %c = eq.i64 %n, 0\n br %c, base, step\nbase:\n ret.i64 0\nstep:\n %m = sub.i64 %n, 1\n %r = call @rec(%m)\n %x = load.i64 %p\n %s = add.i64 %x, %r\n ret.i64 %s\n}\nfn @main() -> i64 {\nentry:\n %r = call @rec(3)\n ret.i64 %r\n}",
         0,
-    ) else {
-        return;
-    };
-    assert_eq!(stdout, "6\n");
-}
-
-#[test]
-fn stack_frames_are_released_on_every_return() {
-    let Some(stdout) = run_wasm_main(
+        "6\n",
+    ),
+    (
+        "stack frames are released on every return",
         "release",
         "fn @leaf(i64 %n) -> i64 {\nentry:\n %p = stackalloc.i64\n store.i64 %p, %n\n %x = load.i64 %p\n ret.i64 %x\n}\nfn @main() -> i64 {\nentry:\n %i = add.i64 0, 0\n jmp loop\nloop:\n %r = call @leaf(%i)\n %i = add.i64 %i, 1\n %c = lt.i64 %i, 6000\n br %c, loop, done\ndone:\n ret.i64 %i\n}",
         0,
-    ) else {
-        return;
-    };
-    assert_eq!(stdout, "6000\n");
-}
-
-#[test]
-fn signed_byte_compares_on_loaded_operands_read_the_sign() {
-    let Some(stdout) = run_wasm_main(
+        "6000\n",
+    ),
+    (
+        "signed byte compares on loaded operands read the sign",
         "cmp8",
         "fn @main() -> i64 {\nentry:\n %p = stackalloc.i8\n store.i8 %p, -1\n %x = load.i8 %p\n %a = lt.i8 %x, 0\n %pv0 = extend.bool.i64 %a\n call @print_i64(%pv0)\n %b = eq.i8 %x, -1\n %pv1 = extend.bool.i64 %b\n call @print_i64(%pv1)\n %c = lt.u8 %x, 1\n %pv2 = extend.bool.i64 %c\n call @print_i64(%pv2)\n %d = gt.i8 %x, -2\n %pv3 = extend.bool.i64 %d\n call @print_i64(%pv3)\n %e = gt.u8 %x, 1\n %pv4 = extend.bool.i64 %e\n call @print_i64(%pv4)\n %f = add.i8 %x, 0\n %g = lt.i8 %f, 0\n %pv5 = extend.bool.i64 %g\n call @print_i64(%pv5)\n ret.i64 0\n}",
         0,
-    ) else {
-        return;
-    };
-    assert_eq!(stdout, "1\n1\n0\n1\n1\n1\n0\n");
-}
-
-#[test]
-fn narrow_compares_normalize_operands_at_their_width() {
-    let Some(stdout) = run_wasm_main(
+        "1\n1\n0\n1\n1\n1\n0\n",
+    ),
+    (
+        "narrow compares normalize operands at their width",
         "cmpwidths",
         "fn @main() -> i64 {\nentry:\n %p8 = stackalloc.i8\n %p16 = stackalloc.i16\n %p32 = stackalloc.i32\n store.i8 %p8, -128\n store.i16 %p16, -32768\n store.i32 %p32, -2147483648\n %a8 = load.i8 %p8\n %a16 = load.i16 %p16\n %a32 = load.i32 %p32\n %s8 = lt.i8 %a8, 0\n %pv0 = extend.bool.i64 %s8\n call @print_i64(%pv0)\n %s16 = lt.i16 %a16, 0\n %pv1 = extend.bool.i64 %s16\n call @print_i64(%pv1)\n %s32 = le.i32 %a32, -2147483648\n %pv2 = extend.bool.i64 %s32\n call @print_i64(%pv2)\n %u8 = lt.u8 %a8, 127\n %pv3 = extend.bool.i64 %u8\n call @print_i64(%pv3)\n %u16 = gt.u16 %a16, 32767\n %pv4 = extend.bool.i64 %u16\n call @print_i64(%pv4)\n %e8 = eq.i8 %a8, -128\n %pv5 = extend.bool.i64 %e8\n call @print_i64(%pv5)\n %c8 = add.i8 %a8, 0\n %g8 = gt.i8 %c8, -127\n %pv6 = extend.bool.i64 %g8\n call @print_i64(%pv6)\n ret.i64 0\n}",
         0,
-    ) else {
-        return;
-    };
-    assert_eq!(stdout, "1\n1\n1\n0\n1\n1\n0\n0\n");
-}
-
-#[test]
-fn narrow_arguments_keep_their_declared_signedness_across_calls() {
-    let Some(stdout) = run_wasm_main(
+        "1\n1\n1\n0\n1\n1\n0\n0\n",
+    ),
+    (
+        "narrow arguments keep their declared signedness across calls",
         "boundary_signedness",
         "fn @mk() -> i8 {\nentry:\n %v = trunc.i64.i8 255\n ret.i8 %v\n}\nfn @take(u8 %u, i8 %c) -> i64 {\nentry:\n %a = lt.u8 %u, 1\n %pv0 = extend.bool.i64 %a\n call @print_i64(%pv0)\n %b = lt.i8 %c, 0\n %pv1 = extend.bool.i64 %b\n call @print_i64(%pv1)\n ret.i64 0\n}\nfn @main() -> i64 {\nentry:\n %c = call @mk()\n %u = trunc.i64.u8 255\n %r = call @take(%u, %c)\n ret.i64 0\n}",
         0,
-    ) else {
-        return;
-    };
-    assert_eq!(stdout, "0\n1\n0\n");
-}
+        "0\n1\n0\n",
+    ),
+    (
+        "tail call with caller frame argument reads caller storage",
+        "tail_frame_arg",
+        "fn @g(ptr %p, i64 %n) -> i64 {\nentry:\n %c = eq.i64 %n, 0\n br %c, base, step\nbase:\n %q = stackalloc.i64\n store.i64 %q, 99\n %x = load.i64 %p\n %y = load.i64 %q\n %z = add.i64 %x, %y\n ret.i64 %z\nstep:\n %m = sub.i64 %n, 1\n %r = call @g(%p, %m)\n ret.i64 %r\n}\nfn @top(i64 %n, i64 %d) -> i64 {\nentry:\n %p = stackalloc.i64\n store.i64 %p, 7\n %r = call @g(%p, %n)\n ret.i64 %r\n}\nfn @main() -> i64 {\nentry:\n %k = add.i64 0, 3\n %r = call @top(%k, %k)\n ret.i64 %r\n}",
+        2,
+        "106\n",
+    ),
+    (
+        "optimized tail calls run in constant stack",
+        "tail_calls",
+        "fn @count(i64 %n) -> i64 {\nentry:\n %c = eq.i64 %n, 0\n br %c, done, step\ndone:\n ret.i64 42\nstep:\n %m = sub.i64 %n, 1\n %r = call @count(%m)\n ret.i64 %r\n}\nfn @main() -> i64 {\nentry:\n %r = call @count(1000000)\n ret.i64 %r\n}",
+        2,
+        "42\n",
+    ),
+    (
+        "relocated global initializers hold real addresses",
+        "global_relocs",
+        "global $s: [4 x i8] = \"xyz\"\nglobal $p: ptr = $s + 1\nglobal $fp: ptr = @g\n\nfn @f() -> i64 {\nentry:\n  ret.i64 65\n}\n\nfn @g() -> i64 {\nentry:\n  ret.i64 66\n}\n\nfn @main() -> i64 {\nentry:\n  %q = load.ptr $p\n  %c = load.i8 %q\n  %w1 = writebyte %c\n  %sp = writebyte 32\n  %h = load.ptr $fp\n  %r = callptr.i64 %h()\n  %w2 = writebyte %r\n  %nl = writebyte 10\n  ret.i64 0\n}",
+        0,
+        "y B\n0\n",
+    ),
+];
 
+#[test]
+fn each_recorded_program_prints_what_it_should_under_wasmtime() {
+    for (behaviour, tag, source, opt_level, expected) in WASM_PROGRAMS {
+        let Some(stdout) = run_wasm_main(tag, source, *opt_level) else {
+            return;
+        };
+        assert_eq!(&stdout, expected, "{behaviour}");
+    }
+}
 #[test]
 fn entry_block_runs_first_after_block_reordering() {
     for opt_level in [0, 1, 2] {
@@ -279,42 +285,6 @@ fn entry_block_runs_first_after_block_reordering() {
         };
         assert_eq!(stdout, "9\n", "opt level {opt_level}");
     }
-}
-
-#[test]
-fn tail_call_with_caller_frame_argument_reads_caller_storage() {
-    let Some(stdout) = run_wasm_main(
-        "tail_frame_arg",
-        "fn @g(ptr %p, i64 %n) -> i64 {\nentry:\n %c = eq.i64 %n, 0\n br %c, base, step\nbase:\n %q = stackalloc.i64\n store.i64 %q, 99\n %x = load.i64 %p\n %y = load.i64 %q\n %z = add.i64 %x, %y\n ret.i64 %z\nstep:\n %m = sub.i64 %n, 1\n %r = call @g(%p, %m)\n ret.i64 %r\n}\nfn @top(i64 %n, i64 %d) -> i64 {\nentry:\n %p = stackalloc.i64\n store.i64 %p, 7\n %r = call @g(%p, %n)\n ret.i64 %r\n}\nfn @main() -> i64 {\nentry:\n %k = add.i64 0, 3\n %r = call @top(%k, %k)\n ret.i64 %r\n}",
-        2,
-    ) else {
-        return;
-    };
-    assert_eq!(stdout, "106\n");
-}
-
-#[test]
-fn optimized_tail_calls_run_in_constant_stack() {
-    let Some(stdout) = run_wasm_main(
-        "tail_calls",
-        "fn @count(i64 %n) -> i64 {\nentry:\n %c = eq.i64 %n, 0\n br %c, done, step\ndone:\n ret.i64 42\nstep:\n %m = sub.i64 %n, 1\n %r = call @count(%m)\n ret.i64 %r\n}\nfn @main() -> i64 {\nentry:\n %r = call @count(1000000)\n ret.i64 %r\n}",
-        2,
-    ) else {
-        return;
-    };
-    assert_eq!(stdout, "42\n");
-}
-
-#[test]
-fn relocated_global_initializers_hold_real_addresses() {
-    let Some(stdout) = run_wasm_main(
-        "global_relocs",
-        "global $s: [4 x i8] = \"xyz\"\nglobal $p: ptr = $s + 1\nglobal $fp: ptr = @g\n\nfn @f() -> i64 {\nentry:\n  ret.i64 65\n}\n\nfn @g() -> i64 {\nentry:\n  ret.i64 66\n}\n\nfn @main() -> i64 {\nentry:\n  %q = load.ptr $p\n  %c = load.i8 %q\n  %w1 = writebyte %c\n  %sp = writebyte 32\n  %h = load.ptr $fp\n  %r = callptr.i64 %h()\n  %w2 = writebyte %r\n  %nl = writebyte 10\n  ret.i64 0\n}",
-        0,
-    ) else {
-        return;
-    };
-    assert_eq!(stdout, "y B\n0\n");
 }
 
 #[test]
