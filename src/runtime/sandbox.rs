@@ -342,12 +342,18 @@ mod tests {
         assert!(violations.is_empty());
     }
 
+    /// Each call the default policy refuses, and the name the refusal has to carry.
     #[test]
-    fn test_analysis_blocks_syscall() {
-        let m = module_with_call("syscall");
-        let violations = analyse_module(&m, &SandboxConfig::default());
-        assert!(!violations.is_empty());
-        assert!(violations[0].contains("syscall"));
+    fn a_call_the_default_policy_refuses_is_reported_by_name() {
+        for callee in ["syscall", "open", "socket"] {
+            let violations = analyse_module(&module_with_call(callee), &SandboxConfig::default());
+            assert!(!violations.is_empty(), "{callee} was allowed");
+            assert!(
+                violations[0].contains(callee),
+                "{callee}: {}",
+                violations[0]
+            );
+        }
     }
 
     #[test]
@@ -359,22 +365,6 @@ mod tests {
         };
         let violations = analyse_module(&m, &config);
         assert!(violations.is_empty());
-    }
-
-    #[test]
-    fn test_analysis_blocks_file_io() {
-        let m = module_with_call("open");
-        let violations = analyse_module(&m, &SandboxConfig::default());
-        assert!(!violations.is_empty());
-        assert!(violations[0].contains("open"));
-    }
-
-    #[test]
-    fn test_analysis_blocks_network() {
-        let m = module_with_call("socket");
-        let violations = analyse_module(&m, &SandboxConfig::default());
-        assert!(!violations.is_empty());
-        assert!(violations[0].contains("socket"));
     }
 
     #[test]
