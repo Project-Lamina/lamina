@@ -1204,7 +1204,7 @@ mod tests {
                 packed: false,
             }, // Empty struct
         };
-        assert_eq!(format!("{}", decl), "type !MyType = struct {  }");
+        assert_eq!(format!("{}", decl), "type !MyType = struct {}");
     }
 
     #[test]

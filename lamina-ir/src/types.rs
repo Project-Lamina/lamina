@@ -427,6 +427,9 @@ impl fmt::Display for Type<'_> {
                 if *packed {
                     write!(f, "packed ")?;
                 }
+                if fields.is_empty() {
+                    return write!(f, "struct {{}}");
+                }
                 write!(f, "struct {{ ")?;
                 for (i, field) in fields.iter().enumerate() {
                     write!(f, "{}: {}", field.name, field.ty)?;
@@ -946,6 +949,17 @@ mod tests {
             Some(10)
         );
         assert_eq!(struct_field_byte_offset(&outer, false, 2, l64()), None);
+    }
+
+    #[test]
+    fn empty_struct_is_zero_sized_with_byte_alignment() {
+        let empty = Type::Struct {
+            fields: Vec::new(),
+            packed: false,
+        };
+        assert_eq!(sizeof_type(&empty, l64()), Some(0));
+        assert_eq!(align_of_type(&empty, l64()), 1);
+        assert_eq!(format!("{empty}"), "struct {}");
     }
 
     #[test]
