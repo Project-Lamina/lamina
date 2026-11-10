@@ -60,6 +60,7 @@ use crate::mir::AtomicBinOp;
 use crate::mir::RelocationModel;
 use lamina_codegen::abi::RuntimeSymbol;
 
+mod aggregate;
 mod wide;
 
 fn float_binary(
@@ -2132,7 +2133,6 @@ fn convert_instruction<'a>(
             align,
         } => {
             let dst = resolve_or_alloc(result, vreg_alloc, var_to_reg);
-            let mir_ty = map_ir_type(ty, layout)?;
             let base = match ptr {
                 IRVal::Variable(id) => var_to_reg
                     .get(id)
@@ -2141,6 +2141,21 @@ fn convert_instruction<'a>(
                 IRVal::Global(name) => globals.register(name, vreg_alloc)?,
                 _ => return Err(FromIRError::UnsupportedInstruction),
             };
+            if let Some(aggregate) = resolved_aggregate(ty, facts.module) {
+                let base_align = stated_or_pointer_align(*align, ptr, facts, layout);
+                return aggregate::load(
+                    dst,
+                    base,
+                    base_align,
+                    &aggregate,
+                    *volatile,
+                    layout,
+                    vreg_alloc,
+                    reservations,
+                    alignments,
+                );
+            }
+            let mir_ty = map_ir_type(ty, layout)?;
             let addr = AddressMode::BaseOffset {
                 base,
                 offset: 0,
@@ -2170,7 +2185,6 @@ fn convert_instruction<'a>(
             volatile,
             align,
         } => {
-            let mir_ty = map_ir_type(ty, layout)?;
             let base = match ptr {
                 IRVal::Variable(id) => var_to_reg
                     .get(id)
@@ -2180,6 +2194,16 @@ fn convert_instruction<'a>(
                 _ => return Err(FromIRError::UnsupportedInstruction),
             };
             let mut src = resolve_operand(value, vreg_alloc, var_to_reg, globals)?;
+            if let Some(aggregate) = resolved_aggregate(ty, facts.module) {
+                let Operand::Register(src) = src else {
+                    return Err(FromIRError::UnsupportedInstruction);
+                };
+                let base_align = stated_or_pointer_align(*align, ptr, facts, layout);
+                return aggregate::store(
+                    base, base_align, src, &aggregate, *volatile, layout, vreg_alloc,
+                );
+            }
+            let mir_ty = map_ir_type(ty, layout)?;
             normalize_lowered_literal(&mut src, mir_ty);
             let addr = AddressMode::BaseOffset {
                 base,
@@ -3090,6 +3114,27 @@ fn address_word(pointer: PointerWidth) -> Result<MirType, FromIRError> {
         PointerWidth::Bits32 => Ok(MirType::Scalar(ScalarType::I32)),
         PointerWidth::Bits64 => Ok(MirType::Scalar(ScalarType::I64)),
         PointerWidth::Bits128 => Err(FromIRError::UnsupportedInstruction),
+    }
+}
+
+/// The resolved struct or array an IR type names, or `None` for a scalar.
+fn resolved_aggregate<'a>(ty: &IRType<'a>, module: &IRModule<'a>) -> Option<IRType<'a>> {
+    if matches!(ty, IRType::Primitive(_)) {
+        return None;
+    }
+    resolve_type_names(ty, &module.type_declarations).filter(is_aggregate)
+}
+
+/// The alignment a whole-aggregate access states: its stated one, else the pointer's.
+fn stated_or_pointer_align(
+    stated: Option<u32>,
+    ptr: &IRVal<'_>,
+    facts: &ValueFacts<'_, '_>,
+    layout: TargetDataLayout,
+) -> u8 {
+    match stated.and_then(|align| u8::try_from(align).ok()) {
+        Some(align) => align,
+        None => pointer_align(ptr, facts.pointer_aligns, facts.module, layout),
     }
 }
 
