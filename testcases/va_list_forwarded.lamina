@@ -1,0 +1,27 @@
+# A function that is handed a va_list walks it without being variadic itself, which
+# is what every vprintf-shaped function does. Only va_start needs the argument area.
+fn @take(ptr %ap) -> i64 {
+  entry:
+    %a = va_arg.i64 %ap
+    %b = va_arg.i64 %ap
+    %s = add.i64 %a, %b
+    ret.i64 %s
+}
+
+fn @sum(i64 %n, ...) -> i64 {
+  entry:
+    %ap = stackalloc.valist
+    va_start %ap
+    %total = call @take(%ap)
+    va_end %ap
+    ret.i64 %total
+}
+
+fn @main() -> i64 {
+  entry:
+    %r = call @sum(2, 20, 22)
+    %c = add.i64 %r, 6
+    %w = writebyte %c
+    %nl = writebyte 10
+    ret.i64 0
+}
