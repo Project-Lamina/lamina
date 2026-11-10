@@ -13301,6 +13301,40 @@ frame fmt 0
 frame main 32
 frame odd 208
 
+[va_list_forwarded O0]
+insns 113
+spills 33
+calls 2
+branches 5
+frame main 32
+frame sum 224
+frame take 32
+
+[va_list_forwarded O1]
+insns 110
+spills 22
+calls 2
+branches 5
+frame main 16
+frame sum 224
+frame take 0
+
+[va_list_forwarded O2]
+insns 101
+spills 18
+calls 1
+branches 5
+frame main 16
+frame sum 208
+
+[va_list_forwarded O3]
+insns 101
+spills 18
+calls 1
+branches 5
+frame main 16
+frame sum 208
+
 [variables O0]
 insns 228
 spills 58
