@@ -1280,6 +1280,13 @@ fn convert_function<'a>(
 
     match &f.signature.return_type {
         IRType::Void => {}
+        other if zero_sized(other, module, layout) => {
+            if f.signature.sret {
+                return Err(FromIRError::AbiClaimMismatch(format!(
+                    "return of @{name} states sret, but {other} has no bytes to return through a hidden pointer"
+                )));
+            }
+        }
         other => {
             let resolved = resolve_type_names(other, &module.type_declarations)
                 .ok_or(FromIRError::UnsupportedType)?;
@@ -1313,6 +1320,15 @@ fn convert_function<'a>(
 
     let mut aggregate_prelude = Vec::new();
     for param in &f.signature.params {
+        if zero_sized(&param.ty, module, layout) {
+            let what = format!("%{} of @{name}", param.name);
+            abi_claim::verify_byval(&param.annotations, None, &param.ty, &what)?;
+            let addr = Register::Virtual(vreg_alloc.allocate_gpr());
+            register_types.insert(addr.clone(), MirType::Scalar(ScalarType::Ptr));
+            aggregate_prelude.push(zero_sized_address(addr.clone(), &mut vreg_alloc));
+            var_to_reg.insert(param.name, addr);
+            continue;
+        }
         let resolved = resolve_type_names(&param.ty, &module.type_declarations)
             .ok_or(FromIRError::UnsupportedType)?;
         let what = format!("%{} of @{name}", param.name);
@@ -1501,7 +1517,12 @@ fn convert_function<'a>(
                 if let Instruction::Call { name, args, .. } = &mut mir_instr
                     && let Some(callee) = module.functions.get(name.as_str())
                 {
-                    for (argument, parameter) in args.iter_mut().zip(&callee.signature.params) {
+                    let passed = callee
+                        .signature
+                        .params
+                        .iter()
+                        .filter(|parameter| !zero_sized(&parameter.ty, module, layout));
+                    for (argument, parameter) in args.iter_mut().zip(passed) {
                         if is_aggregate(&parameter.ty)
                             || wide::is_wide_type(&parameter.ty, int64_regs)
                             || resolve_type_names(&parameter.ty, &module.type_declarations)
@@ -2094,7 +2115,7 @@ fn convert_instruction<'a>(
         }]),
         IRInst::Unreachable => Ok(vec![Instruction::Unreachable]),
         IRInst::Ret { ty, value } => {
-            if matches!(ty, IRType::Void) {
+            if matches!(ty, IRType::Void) || zero_sized(ty, facts.module, layout) {
                 return Ok(vec![Instruction::Ret { value: None }]);
             }
             let op = match value {
@@ -2187,10 +2208,22 @@ fn convert_instruction<'a>(
             func_name,
             args,
         } => {
+            let callee = facts.module.functions.get(func_name);
             let mut mir_args = Vec::new();
-            for (_, a) in args {
+            for (index, (ty, a)) in args.iter().enumerate() {
+                let no_bytes = match callee.and_then(|c| c.signature.params.get(index)) {
+                    Some(param) => zero_sized(&param.ty, facts.module, layout),
+                    None => ty
+                        .as_ref()
+                        .is_some_and(|ty| zero_sized(ty, facts.module, layout)),
+                };
+                if no_bytes {
+                    continue;
+                }
                 mir_args.push(resolve_operand(a, vreg_alloc, var_to_reg, globals)?);
             }
+            let zero_return =
+                callee.is_some_and(|c| zero_sized(&c.signature.return_type, facts.module, layout));
             // C widens a variadic f32 to double before the call, and every ABI's
             // variadic rules are written for the widened value.
             let fixed = facts
@@ -2215,12 +2248,19 @@ fn convert_instruction<'a>(
                 });
                 *arg = Operand::Register(dst);
             }
-            let ret = result.map(|res| resolve_or_alloc(res, vreg_alloc, var_to_reg));
+            let ret = match result {
+                Some(res) if !zero_return => Some(resolve_or_alloc(res, vreg_alloc, var_to_reg)),
+                _ => None,
+            };
             instructions.push(Instruction::Call {
                 name: (*func_name).to_string(),
                 args: mir_args,
                 ret,
             });
+            if let Some(res) = result.filter(|_| zero_return) {
+                let dst = resolve_or_alloc(res, vreg_alloc, var_to_reg);
+                instructions.push(zero_sized_address(dst, vreg_alloc));
+            }
             Ok(instructions)
         }
         IRInst::FuncAddr { result, func_name } => {
@@ -2241,8 +2281,12 @@ fn convert_instruction<'a>(
             let mut mir_args = Vec::new();
             let mut arg_types = Vec::new();
             let mut instructions = Vec::new();
-            let fixed = variadic_fixed.unwrap_or(args.len());
-            for (index, (arg_ty, argument)) in args.iter().enumerate() {
+            let passed: Vec<_> = args
+                .iter()
+                .filter(|(ty, _)| !zero_sized(ty, facts.module, layout))
+                .collect();
+            let fixed = variadic_fixed.unwrap_or(passed.len());
+            for (index, (arg_ty, argument)) in passed.into_iter().enumerate() {
                 let mut mir_ty = map_ir_type(arg_ty, layout)?;
                 let mut operand = resolve_operand(argument, vreg_alloc, var_to_reg, globals)?;
                 normalize_lowered_literal(&mut operand, mir_ty);
@@ -2260,11 +2304,16 @@ fn convert_instruction<'a>(
                 arg_types.push(mir_ty);
                 mir_args.push(operand);
             }
+            let zero_return = zero_sized(return_type, facts.module, layout);
             let ret_ty = match return_type {
                 IRType::Void => None,
+                _ if zero_return => None,
                 other => Some(map_ir_type(other, layout)?),
             };
-            let ret = result.map(|name| resolve_or_alloc(name, vreg_alloc, var_to_reg));
+            let ret = match result {
+                Some(name) if !zero_return => Some(resolve_or_alloc(name, vreg_alloc, var_to_reg)),
+                _ => None,
+            };
             instructions.push(Instruction::CallIndirect {
                 target,
                 arg_types,
@@ -2273,6 +2322,10 @@ fn convert_instruction<'a>(
                 ret,
                 ret_ty,
             });
+            if let Some(name) = result.filter(|_| zero_return) {
+                let dst = resolve_or_alloc(name, vreg_alloc, var_to_reg);
+                instructions.push(zero_sized_address(dst, vreg_alloc));
+            }
             Ok(instructions)
         }
         IRInst::ZeroExtend {
@@ -3037,6 +3090,22 @@ fn address_word(pointer: PointerWidth) -> Result<MirType, FromIRError> {
         PointerWidth::Bits32 => Ok(MirType::Scalar(ScalarType::I32)),
         PointerWidth::Bits64 => Ok(MirType::Scalar(ScalarType::I64)),
         PointerWidth::Bits128 => Err(FromIRError::UnsupportedInstruction),
+    }
+}
+
+/// Whether an IR type is a struct or array with no bytes. Such a value crosses a
+/// function boundary without a register or a copy.
+fn zero_sized(ty: &IRType<'_>, module: &IRModule<'_>, layout: TargetDataLayout) -> bool {
+    resolve_type_names(ty, &module.type_declarations).is_some_and(|resolved| {
+        is_aggregate(&resolved) && sizeof_type(&resolved, layout) == Some(0)
+    })
+}
+
+/// The address of a zero-sized value. It names a frame slot that no byte is reserved in.
+fn zero_sized_address(dst: Register, vreg_alloc: &mut VirtualRegAllocator) -> Instruction {
+    Instruction::StackAddr {
+        dst,
+        slot: vreg_alloc.allocate_gpr(),
     }
 }
 
