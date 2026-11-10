@@ -1,0 +1,134 @@
+# Whole-aggregate load and store copy the bytes: a struct loaded from one slot and
+# stored into another keeps its fields, a nested struct and an array of i32 keep
+# theirs, and a padded struct copies only its fields.
+
+type !Inner = struct { x: i32, y: i32 }
+type !Outer = struct { head: i64, inner: !Inner, tail: i8 }
+type !Arr = [4 x i32]
+type !Pad = struct { a: u8, b: u32, c: u16 }
+
+fn @put_u64(u64 %n) -> void {
+entry:
+  %q = div.u64 %n, 10
+  %r = rem.u64 %n, 10
+  %d = add.u64 %r, 48
+  %z = eq.u64 %q, 0
+  br %z, last, more
+more:
+  call @put_u64(%q)
+  jmp last
+last:
+  %w = writebyte %d
+  ret.void
+}
+
+fn @print_i64(i64 %n) -> void {
+entry:
+  %neg = lt.i64 %n, 0
+  %m = sub.i64 0, %n
+  %s = select.i64 %neg, %m, %n
+  %u = bitcast.i64.u64 %s
+  br %neg, minus, digits
+minus:
+  %c = writebyte 45
+  jmp digits
+digits:
+  call @put_u64(%u)
+  %nl = writebyte 10
+  ret.void
+}
+
+fn @nested() -> void {
+entry:
+  %src = stackalloc.!Outer
+  %head = getfieldptr.!Outer %src, 0
+  store.i64 %head, 100
+  %inner = getfieldptr.!Outer %src, 1
+  %ix = getfieldptr.!Inner %inner, 0
+  store.i32 %ix, 7
+  %iy = getfieldptr.!Inner %inner, 1
+  store.i32 %iy, 8
+  %tail = getfieldptr.!Outer %src, 2
+  store.i8 %tail, 9
+
+  %v = load.!Outer %src
+  %dst = stackalloc.!Outer
+  store.!Outer %dst, %v
+
+  store.i64 %head, 0
+  store.i32 %ix, 0
+
+  %dhead = getfieldptr.!Outer %dst, 0
+  %h = load.i64 %dhead
+  call @print_i64(%h)
+  %dinner = getfieldptr.!Outer %dst, 1
+  %dx = getfieldptr.!Inner %dinner, 0
+  %x = load.i32 %dx
+  %xw = extend.i32.i64 %x
+  call @print_i64(%xw)
+  %dy = getfieldptr.!Inner %dinner, 1
+  %y = load.i32 %dy
+  %yw = extend.i32.i64 %y
+  call @print_i64(%yw)
+  %dtail = getfieldptr.!Outer %dst, 2
+  %t = load.i8 %dtail
+  %tw = extend.i8.i64 %t
+  call @print_i64(%tw)
+  ret.void
+}
+
+fn @array() -> void {
+entry:
+  %a = stackalloc.!Arr
+  %e0 = getelem.i32 %a, 0
+  store.i32 %e0, 11
+  %e3 = getelem.i32 %a, 3
+  store.i32 %e3, 44
+  %v = load.!Arr %a
+  %b = stackalloc.!Arr
+  store.!Arr %b, %v
+  %f3 = getelem.i32 %b, 3
+  %r3 = load.i32 %f3
+  %w3 = extend.i32.i64 %r3
+  call @print_i64(%w3)
+  %f0 = getelem.i32 %b, 0
+  %r0 = load.i32 %f0
+  %w0 = extend.i32.i64 %r0
+  call @print_i64(%w0)
+  ret.void
+}
+
+fn @padded() -> void {
+entry:
+  %p = stackalloc.!Pad
+  %pa = getfieldptr.!Pad %p, 0
+  store.u8 %pa, 200
+  %pb = getfieldptr.!Pad %p, 1
+  store.u32 %pb, 70000
+  %pc = getfieldptr.!Pad %p, 2
+  store.u16 %pc, 60000
+  %v = load.!Pad %p
+  %q = stackalloc.!Pad
+  store.!Pad %q, %v
+  %qa = getfieldptr.!Pad %q, 0
+  %a = load.u8 %qa
+  %aw = extend.u8.i64 %a
+  call @print_i64(%aw)
+  %qb = getfieldptr.!Pad %q, 1
+  %b = load.u32 %qb
+  %bw = extend.u32.i64 %b
+  call @print_i64(%bw)
+  %qc = getfieldptr.!Pad %q, 2
+  %c = load.u16 %qc
+  %cw = extend.u16.i64 %c
+  call @print_i64(%cw)
+  ret.void
+}
+
+fn @main() -> i64 {
+entry:
+  call @nested()
+  call @array()
+  call @padded()
+  ret.i64 0
+}
