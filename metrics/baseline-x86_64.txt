@@ -201,6 +201,48 @@ frame main 240
 frame put_u64 16
 frame spill6 80
 
+[aggregate_load_store O0]
+insns 489
+spills 243
+calls 14
+branches 3
+frame array 304
+frame main 0
+frame nested 400
+frame padded 288
+frame print_i64 64
+frame put_u64 48
+
+[aggregate_load_store O1]
+insns 294
+spills 25
+calls 14
+branches 3
+frame array 64
+frame main 0
+frame nested 96
+frame padded 64
+frame print_i64 16
+frame put_u64 16
+
+[aggregate_load_store O2]
+insns 503
+spills 39
+calls 11
+branches 19
+frame array 48
+frame main 48
+frame put_u64 16
+
+[aggregate_load_store O3]
+insns 488
+spills 31
+calls 11
+branches 19
+frame array 32
+frame main 16
+frame put_u64 16
+
 [aggregate_memory_params O0]
 insns 269
 spills 108
@@ -1809,6 +1851,40 @@ branches 18
 frame main 32
 frame print_digits 32
 
+[empty_struct_type O0]
+insns 118
+spills 36
+calls 3
+branches 3
+frame main 64
+frame print_i64 64
+frame put_u64 48
+
+[empty_struct_type O1]
+insns 111
+spills 13
+calls 3
+branches 3
+frame main 16
+frame print_i64 16
+frame put_u64 16
+
+[empty_struct_type O2]
+insns 98
+spills 11
+calls 2
+branches 3
+frame main 16
+frame put_u64 16
+
+[empty_struct_type O3]
+insns 98
+spills 11
+calls 2
+branches 3
+frame main 16
+frame put_u64 16
+
 [extern_declarations O0]
 insns 174
 spills 49
@@ -2830,6 +2906,42 @@ branches 0
 frame answer 0
 frame fp 0
 frame main 16
+
+[global_literal_fills_slot O0]
+insns 145
+spills 46
+calls 0
+branches 0
+frame main 240
+frame s 0
+frame wide 0
+
+[global_literal_fills_slot O1]
+insns 119
+spills 12
+calls 0
+branches 0
+frame main 32
+frame s 0
+frame wide 0
+
+[global_literal_fills_slot O2]
+insns 119
+spills 12
+calls 0
+branches 0
+frame main 32
+frame s 0
+frame wide 0
+
+[global_literal_fills_slot O3]
+insns 117
+spills 10
+calls 0
+branches 0
+frame main 16
+frame s 0
+frame wide 0
 
 [global_nested_init O0]
 insns 187
@@ -13493,4 +13605,50 @@ frame make2 32
 frame make3 48
 frame maked1 16
 frame maked2 32
+frame put_u64 16
+
+[zero_size_aggregates O0]
+insns 206
+spills 64
+calls 10
+branches 3
+frame main 128
+frame make_empty 16
+frame make_nothing 16
+frame mixed 144
+frame pass 16
+frame print_i64 64
+frame put_u64 48
+
+[zero_size_aggregates O1]
+insns 156
+spills 15
+calls 10
+branches 3
+frame main 16
+frame make_empty 0
+frame make_nothing 0
+frame mixed 0
+frame pass 0
+frame print_i64 16
+frame put_u64 16
+
+[zero_size_aggregates O2]
+insns 173
+spills 13
+calls 5
+branches 5
+frame main 16
+frame mixed 0
+frame pass 0
+frame put_u64 16
+
+[zero_size_aggregates O3]
+insns 173
+spills 13
+calls 5
+branches 5
+frame main 16
+frame mixed 0
+frame pass 0
 frame put_u64 16
