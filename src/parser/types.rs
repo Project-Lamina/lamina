@@ -49,9 +49,6 @@ pub fn parse_composite_type<'a>(state: &mut ParserState<'a>) -> Result<Type<'a>,
         loop {
             state.skip_whitespace_and_comments();
             if state.current_char() == Some('}') {
-                if fields.is_empty() {
-                    return Err(state.error("Struct type must have at least one field\n  Hint: Empty structs are not allowed. Add at least one field (e.g., 'struct { x: i32 }')"));
-                }
                 state.advance();
                 break;
             }

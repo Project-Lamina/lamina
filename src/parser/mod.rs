@@ -3299,6 +3299,15 @@ mod surface_tests {
     }
 
     #[test]
+    fn empty_struct_parses_and_displays_as_empty_braces() {
+        let source = "type !Empty = struct {}\n\nfn @id(!Empty %e) -> !Empty {\nentry:\n  ret.!Empty %e\n}\n";
+        let module = parse_module(source).expect("empty struct parses");
+        let printed = module.to_string();
+        assert!(printed.contains("struct {}"), "{printed}");
+        assert_eq!(parse_module(&printed).expect("reparse").to_string(), printed);
+    }
+
+    #[test]
     fn wide_integer_literals_respect_their_width() {
         rejects(
             "fn @f() -> i128 {\nentry:\n  %x = add.i128 170141183460469231731687303715884105728, 0\n  ret.i128 %x\n}\n",
