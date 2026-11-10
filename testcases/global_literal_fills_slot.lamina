@@ -1,0 +1,45 @@
+# A bare integer literal in an aggregate initializer takes the width of the slot
+# it lands in, not the width of its own spelling: a zero in a ptr field is eight
+# bytes, and a negative literal in a wider slot keeps its sign.
+type !Scan = struct { start: ptr, line: i32, end: ptr }
+
+global $s: !Scan = { 0, -1, 0 }
+global $wide: [2 x i64] = [ 7, -2 ]
+
+fn @main() -> i64 {
+  entry:
+    %sp = getfieldptr.!Scan $s, 0
+    %start = load.ptr %sp
+    %null = ptrtoint.i64 %start
+    %z = eq.i64 %null, 0
+    %zc = extend.bool.i64 %z
+    %c1 = add.i64 %zc, 48
+    %w1 = writebyte %c1
+
+    %lp = getfieldptr.!Scan $s, 1
+    %line = load.i32 %lp
+    %l64 = extend.i32.i64 %line
+    %c2 = add.i64 %l64, 49
+    %w2 = writebyte %c2
+
+    %ep = getfieldptr.!Scan $s, 2
+    %end = load.ptr %ep
+    %enull = ptrtoint.i64 %end
+    %z2 = eq.i64 %enull, 0
+    %zc2 = extend.bool.i64 %z2
+    %c3 = add.i64 %zc2, 48
+    %w3 = writebyte %c3
+
+    %w0 = getelem.i64 $wide, 0
+    %seven = load.i64 %w0
+    %c4 = add.i64 %seven, 48
+    %w4 = writebyte %c4
+
+    %w1p = getelem.i64 $wide, 1
+    %neg = load.i64 %w1p
+    %c5 = add.i64 %neg, 50
+    %w5 = writebyte %c5
+
+    %nl = writebyte 10
+    ret.i64 0
+}
