@@ -150,12 +150,24 @@ pub(super) fn emit<W: Write>(
     func_name: &str,
 ) -> Result<(), LaminaError> {
     let lp = local_label_prefix(target_os);
-    let Some(area) = area else {
-        return Err(unsupported(
-            "variadic arguments are only available inside a variadic function",
-        ));
+    // Only `va_start` reads the argument area. A function that is handed a `va_list`
+    // walks it through the pointer alone, so it has no area of its own and needs none.
+    let area = match area {
+        Some(area) => *area,
+        None if matches!(inst, MirInst::VaStart { .. }) => {
+            return Err(unsupported(
+                "va_start is only available inside a variadic function",
+            ));
+        }
+        None if target_os == TargetOperatingSystem::Windows => VaArea::Win64 { first: 0 },
+        None => VaArea::SysV {
+            save: 0,
+            overflow: 0,
+            gp_offset: 0,
+            fp_offset: 0,
+        },
     };
-    let (save, overflow, gp_offset, fp_offset) = match *area {
+    let (save, overflow, gp_offset, fp_offset) = match area {
         VaArea::Win64 { first } => {
             return emit_win64(inst, writer, reg_alloc, stack_slots, first);
         }

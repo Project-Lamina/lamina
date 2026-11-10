@@ -988,7 +988,9 @@ fn wide_global_bytes(
             "@{name} needs a literal initializer"
         )));
     };
-    Ok(Some(literal_bytes_in_slot(name, literal, size, endianness)?))
+    Ok(Some(literal_bytes_in_slot(
+        name, literal, size, endianness,
+    )?))
 }
 
 /// An integer literal in a slot wider than its own spelling. The text IR writes a
@@ -1013,7 +1015,11 @@ fn literal_bytes_in_slot(
             bytes.len()
         )));
     }
-    let sign = if literal_is_negative(literal) { 0xff } else { 0 };
+    let sign = if literal_is_negative(literal) {
+        0xff
+    } else {
+        0
+    };
     // The widening bytes are the high ones, which come last only in little-endian order.
     match endianness {
         Endianness::Little => bytes.resize(width, sign),
@@ -1214,22 +1220,18 @@ fn convert_function<'a>(
     int64_regs: bool,
     endianness: Endianness,
 ) -> Result<Function, FromIRError> {
+    // Only `va_start` needs the argument area a variadic prologue lays out. The rest
+    // walk a `va_list` object through a pointer, which is how a function that takes
+    // one and forwards it -- `vfprintf` and its kind -- reads its arguments without
+    // being variadic itself (C99 7.15.3).
     if !f.signature.variadic
         && f.basic_blocks
             .values()
             .flat_map(|block| &block.instructions)
-            .any(|instr| {
-                matches!(
-                    instr,
-                    IRInst::VaStart { .. }
-                        | IRInst::VaArg { .. }
-                        | IRInst::VaEnd { .. }
-                        | IRInst::VaCopy { .. }
-                )
-            })
+            .any(|instr| matches!(instr, IRInst::VaStart { .. }))
     {
         return Err(FromIRError::VariadicArgument(format!(
-            "va_* instruction in @{name}, which is not variadic"
+            "va_start in @{name}, which is not variadic"
         )));
     }
     let mut vreg_alloc = VirtualRegAllocator::new();
