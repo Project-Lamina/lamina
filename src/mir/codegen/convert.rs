@@ -867,13 +867,11 @@ fn element_list_bytes(
                 continue;
             }
         };
-        let encoded = literal_bytes(name, literal, endianness)?;
-        if encoded.len() != width {
-            return Err(FromIRError::UnsupportedGlobal(format!(
-                "@{name} element {index} is {} bytes, not the {width} its slot takes",
-                encoded.len()
-            )));
-        }
+        let encoded = literal_bytes_in_slot(name, literal, width, endianness).map_err(|_| {
+            FromIRError::UnsupportedGlobal(format!(
+                "@{name} element {index} does not fit the {width} bytes its slot takes"
+            ))
+        })?;
         bytes[at..at + width].copy_from_slice(&encoded);
     }
     Ok((bytes, relocations))
@@ -990,28 +988,42 @@ fn wide_global_bytes(
             "@{name} needs a literal initializer"
         )));
     };
+    Ok(Some(literal_bytes_in_slot(name, literal, size, endianness)?))
+}
+
+/// An integer literal in a slot wider than its own spelling. The text IR writes a
+/// bare `0` whatever the field holds, so the slot's width is what decides, and the
+/// value is extended by its sign the way a narrowing-free assignment would.
+fn literal_bytes_in_slot(
+    name: &str,
+    literal: &IRLit<'_>,
+    width: usize,
+    endianness: Endianness,
+) -> Result<Vec<u8>, FromIRError> {
     let mut bytes = literal_bytes(name, literal, endianness)?;
-    if bytes.len() > size {
+    if bytes.len() > width {
         return Err(FromIRError::UnsupportedGlobal(format!(
-            "@{name} initializer is {} bytes, wider than the {size} its type takes",
+            "@{name} initializer is {} bytes, wider than the {width} its type takes",
             bytes.len()
         )));
     }
-    let sign = if literal_is_negative(literal) {
-        0xff
-    } else {
-        0
-    };
+    if matches!(literal, IRLit::F32(_) | IRLit::F64(_)) && bytes.len() != width {
+        return Err(FromIRError::UnsupportedGlobal(format!(
+            "@{name} initializer is {} bytes, not the {width} its slot takes",
+            bytes.len()
+        )));
+    }
+    let sign = if literal_is_negative(literal) { 0xff } else { 0 };
     // The widening bytes are the high ones, which come last only in little-endian order.
     match endianness {
-        Endianness::Little => bytes.resize(size, sign),
+        Endianness::Little => bytes.resize(width, sign),
         Endianness::Big => {
-            let mut widened = vec![sign; size.saturating_sub(bytes.len())];
+            let mut widened = vec![sign; width.saturating_sub(bytes.len())];
             widened.append(&mut bytes);
             bytes = widened;
         }
     }
-    Ok(Some(bytes))
+    Ok(bytes)
 }
 
 fn literal_is_negative(literal: &IRLit<'_>) -> bool {
