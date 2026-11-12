@@ -21,6 +21,7 @@ use lamina_platform::{Target, TargetArchitecture, cpu_count};
 use crate::LaminaError;
 use crate::cache::lamina_cache_dir;
 use std::{
+    env,
     fs::{create_dir_all, remove_dir_all, write},
     path::Path,
     process::{self, Command},
@@ -178,6 +179,9 @@ pub fn handle_jit_compilation(
         ) {
             Ok(result) => (Some(result), None),
             Err(err) => {
+                if env::var_os("LAMINA_JIT_NO_FALLBACK").is_some() {
+                    return Err(err);
+                }
                 if options.verbose {
                     eprintln!(
                         "[JIT] In-memory compilation failed; falling back to AOT execution.\n  Reason: {err}"
