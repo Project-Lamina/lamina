@@ -306,5 +306,44 @@ mod tests {
             assert_eq!(load(second_cell), 77);
             assert_eq!(load(base), 10);
         }
+
+        #[repr(C)]
+        #[derive(Debug, PartialEq)]
+        struct Pair {
+            a: i64,
+            b: i64,
+        }
+
+        const AGGREGATE_PROGRAM: &str = r#"
+        type !Pair = struct { a: i64, b: i64 }
+
+        fn @swap_into(ptr %src, ptr %dst) -> void {
+        entry:
+          %ap = getfieldptr.!Pair %src, 0
+          %bp = getfieldptr.!Pair %src, 1
+          %a = load.i64 %ap
+          %b = load.i64 %bp
+          %oa = getfieldptr.!Pair %dst, 0
+          %ob = getfieldptr.!Pair %dst, 1
+          store.i64 %oa, %b
+          store.i64 %ob, %a
+          ret.void
+        }
+        "#;
+
+        #[test]
+        fn struct_fields_round_trip_through_pointers() {
+            let swap = compile_entry(AGGREGATE_PROGRAM, "@swap_into");
+            // SAFETY: @swap_into takes two pointers to a two-word struct and returns nothing;
+            // `swap` owns the code.
+            let call: extern "C" fn(*const Pair, *mut Pair) =
+                unsafe { transmute(swap.function_ptr) };
+            let src = Pair { a: 3, b: 10 };
+            let mut dst = Pair { a: 0, b: 0 };
+            call(&src, &mut dst);
+            assert_eq!(dst, Pair { a: 10, b: 3 });
+            call(&Pair { a: -1, b: 0 }, &mut dst);
+            assert_eq!(dst, Pair { a: 0, b: -1 });
+        }
     }
 }
