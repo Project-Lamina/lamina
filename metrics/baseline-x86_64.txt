@@ -844,8 +844,8 @@ frame print_digit 16
 frame print_digits 32
 
 [callptr_float_literal O0]
-insns 275
-spills 81
+insns 277
+spills 83
 calls 19
 branches 3
 frame bits32 32
@@ -860,8 +860,8 @@ frame report 32
 frame slot 0
 
 [callptr_float_literal O1]
-insns 278
-spills 40
+insns 276
+spills 38
 calls 19
 branches 3
 frame bits32 16
@@ -876,8 +876,8 @@ frame report 16
 frame slot 0
 
 [callptr_float_literal O2]
-insns 594
-spills 56
+insns 592
+spills 54
 calls 18
 branches 19
 frame bits32 16
@@ -891,8 +891,8 @@ frame report 16
 frame slot 0
 
 [callptr_float_literal O3]
-insns 590
-spills 52
+insns 588
+spills 50
 calls 18
 branches 19
 frame bits32 16
@@ -906,8 +906,8 @@ frame report 16
 frame slot 0
 
 [callptr_returns_aggregate O0]
-insns 282
-spills 130
+insns 284
+spills 132
 calls 8
 branches 1
 frame main 288
@@ -948,32 +948,32 @@ frame make_pair 16
 frame put_u64 16
 
 [callptr_variadic O0]
-insns 26
-spills 7
+insns 25
+spills 6
 calls 1
 branches 0
 frame fmt 0
 frame main 32
 
 [callptr_variadic O1]
-insns 28
-spills 6
+insns 27
+spills 5
 calls 1
 branches 0
 frame fmt 0
 frame main 32
 
 [callptr_variadic O2]
-insns 28
-spills 6
+insns 27
+spills 5
 calls 1
 branches 0
 frame fmt 0
 frame main 32
 
 [callptr_variadic O3]
-insns 28
-spills 6
+insns 27
+spills 5
 calls 1
 branches 0
 frame fmt 0
@@ -2548,8 +2548,8 @@ frame put_u64 16
 frame weak_add 0
 
 [function_pointers O0]
-insns 235
-spills 69
+insns 236
+spills 70
 calls 12
 branches 3
 frame apply 32
@@ -13044,8 +13044,8 @@ frame print_u64 16
 frame put_u64 16
 
 [va_arg_chain O0]
-insns 94
-spills 33
+insns 95
+spills 34
 calls 4
 branches 3
 frame deep 16
@@ -13088,8 +13088,8 @@ frame main 32
 frame vchain 208
 
 [va_arg_copy O0]
-insns 124
-spills 37
+insns 125
+spills 38
 calls 2
 branches 7
 frame fmt 0
@@ -13124,8 +13124,8 @@ frame main 32
 frame twice 224
 
 [va_arg_copy_stack O0]
-insns 222
-spills 61
+insns 223
+spills 62
 calls 2
 branches 19
 frame fmt 0
@@ -13160,8 +13160,8 @@ frame main 32
 frame skip 240
 
 [va_arg_mixed O0]
-insns 192
-spills 60
+insns 193
+spills 61
 calls 2
 branches 7
 frame fmt 0
@@ -13196,8 +13196,8 @@ frame main 32
 frame mix 240
 
 [va_arg_narrow O0]
-insns 111
-spills 39
+insns 112
+spills 40
 calls 2
 branches 7
 frame fmt 0
@@ -13232,8 +13232,8 @@ frame main 32
 frame narrow 208
 
 [va_arg_no_variadic O0]
-insns 138
-spills 62
+insns 139
+spills 63
 calls 3
 branches 6
 frame fmt 0
@@ -13272,8 +13272,8 @@ frame noop 208
 frame sum 208
 
 [va_arg_sum O0]
-insns 113
-spills 42
+insns 114
+spills 43
 calls 2
 branches 5
 frame fmt 0
@@ -13308,8 +13308,8 @@ frame main 32
 frame sum 208
 
 [va_arg_wide_align O0]
-insns 145
-spills 47
+insns 146
+spills 48
 calls 2
 branches 11
 frame fmt 0
