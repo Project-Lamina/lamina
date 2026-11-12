@@ -1,0 +1,81 @@
+# A call through a function pointer returns a struct by value: a pair small enough for
+# the return registers, and one wide enough to travel through a hidden pointer.
+
+type !Pair = struct { a: i64, b: i64 }
+type !Big = struct { a: i64, b: i64, c: i64 }
+
+fn @put_u64(u64 %n) -> void {
+entry:
+  %q = div.u64 %n, 10
+  %r = rem.u64 %n, 10
+  %d = add.u64 %r, 48
+  %z = eq.u64 %q, 0
+  br %z, last, more
+more:
+  call @put_u64(%q)
+  jmp last
+last:
+  %w = writebyte %d
+  ret.void
+}
+
+fn @print_i64(i64 %n) -> void {
+entry:
+  %u = bitcast.i64.u64 %n
+  call @put_u64(%u)
+  %nl = writebyte 10
+  ret.void
+}
+
+fn @make_pair(i64 %n) -> !Pair {
+entry:
+  %p = stackalloc.!Pair
+  %pa = getfieldptr.!Pair %p, 0
+  store.i64 %pa, %n
+  %double = add.i64 %n, %n
+  %pb = getfieldptr.!Pair %p, 1
+  store.i64 %pb, %double
+  %v = load.!Pair %p
+  ret.!Pair %v
+}
+
+fn @make_big(i64 %n) -> !Big {
+entry:
+  %p = stackalloc.!Big
+  %pa = getfieldptr.!Big %p, 0
+  store.i64 %pa, %n
+  %pb = getfieldptr.!Big %p, 1
+  %two = add.i64 %n, 1
+  store.i64 %pb, %two
+  %pc = getfieldptr.!Big %p, 2
+  %three = add.i64 %n, 2
+  store.i64 %pc, %three
+  %v = load.!Big %p
+  ret.!Big %v
+}
+
+fn @main() -> i64 {
+entry:
+  %f = funcaddr @make_pair
+  %v = callptr.!Pair %f(i64 21)
+  %slot = stackalloc.!Pair
+  store.!Pair %slot, %v
+  %sa = getfieldptr.!Pair %slot, 0
+  %a = load.i64 %sa
+  call @print_i64(%a)
+  %sb = getfieldptr.!Pair %slot, 1
+  %b = load.i64 %sb
+  call @print_i64(%b)
+
+  %g = funcaddr @make_big
+  %w = callptr.!Big %g(i64 100)
+  %bslot = stackalloc.!Big
+  store.!Big %bslot, %w
+  %ba = getfieldptr.!Big %bslot, 0
+  %x = load.i64 %ba
+  call @print_i64(%x)
+  %bc = getfieldptr.!Big %bslot, 2
+  %y = load.i64 %bc
+  call @print_i64(%y)
+  ret.i64 0
+}
