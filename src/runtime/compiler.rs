@@ -272,5 +272,39 @@ mod tests {
             assert_eq!(call(40, 2, 1.5), 42);
             assert_eq!(call(-7, 10, f64::NAN), 3);
         }
+
+        const POINTER_PROGRAM: &str = r#"
+        type !Pair = struct { a: i64, b: i64 }
+
+        fn @second_word(ptr %p) -> ptr {
+        entry:
+          %q = getfieldptr.!Pair %p, 1
+          ret.ptr %q
+        }
+
+        fn @read_word(ptr %p) -> i64 {
+        entry:
+          %v = load.i64 %p
+          ret.i64 %v
+        }
+        "#;
+
+        #[test]
+        fn pointer_argument_and_return_address_the_same_memory() {
+            let second = compile_entry(POINTER_PROGRAM, "@second_word");
+            // SAFETY: @second_word takes a pointer and returns one; `second` owns the code.
+            let advance: extern "C" fn(*mut i64) -> *mut i64 =
+                unsafe { transmute(second.function_ptr) };
+            let read = compile_entry(POINTER_PROGRAM, "@read_word");
+            // SAFETY: @read_word takes a pointer and returns i64; `read` owns the code.
+            let load: extern "C" fn(*const i64) -> i64 = unsafe { transmute(read.function_ptr) };
+
+            let mut cells = [10_i64, 77];
+            let base = cells.as_mut_ptr();
+            let second_cell = advance(base);
+            assert_eq!(second_cell as usize, base as usize + 8);
+            assert_eq!(load(second_cell), 77);
+            assert_eq!(load(base), 10);
+        }
     }
 }
