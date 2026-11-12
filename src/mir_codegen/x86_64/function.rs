@@ -1841,3 +1841,56 @@ mod naked_tests {
         assert!(!asm.contains("(%rsp)"), "{asm}");
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod call_and_scratch_tests {
+    use super::*;
+    use lamina_mir::instruction::{AddressMode, MemoryAttrs};
+    use lamina_mir::types::{AddressSpace, MirType};
+
+    fn call_indirect() -> MirInst {
+        MirInst::CallIndirect {
+            target: Operand::Register(Register::Virtual(VirtualReg::gpr(0))),
+            arg_types: Vec::new(),
+            args: Vec::new(),
+            variadic_fixed: None,
+            ret: None,
+            ret_ty: None,
+            ret_aggregate: None,
+            arg_aggregates: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn call_through_pointer_clobbers_what_a_named_call_does() {
+        let indirect =
+            instruction_clobbers(&call_indirect(), false, TargetOperatingSystem::Linux, "f");
+        for reg in ["rcx", "rdx", "r8", "r9", "r10", "r11", "rsi", "rdi"] {
+            assert!(indirect.contains(&reg), "{reg} missing from {indirect:?}");
+        }
+    }
+
+    #[test]
+    fn a_load_reserves_the_scratch_its_address_may_need() {
+        let load = MirInst::Load {
+            ty: MirType::Scalar(ScalarType::I64),
+            dst: Register::Virtual(VirtualReg::gpr(1)),
+            addr: AddressMode::BaseIndexScale {
+                address_space: AddressSpace::default(),
+                base: Register::Virtual(VirtualReg::gpr(2)),
+                index: Register::Virtual(VirtualReg::gpr(3)),
+                scale: 4,
+                offset: 0,
+            },
+            attrs: MemoryAttrs::default(),
+        };
+        for leaf in [false, true] {
+            let clobbers = instruction_clobbers(&load, leaf, TargetOperatingSystem::Linux, "f");
+            let expected = if leaf { ["rcx", "rdx"] } else { ["r10", "r11"] };
+            for reg in expected {
+                assert!(clobbers.contains(&reg), "{reg} missing from {clobbers:?}");
+            }
+        }
+    }
+}
