@@ -808,10 +808,11 @@ fn emit_instruction<W: Write>(
             ret,
             ret_ty,
             ret_aggregate,
+            arg_aggregates,
         } => {
-            if ret_aggregate.is_some() {
+            if ret_aggregate.is_some() || arg_aggregates.iter().any(Option::is_some) {
                 return Err(unsupported(
-                    "i686 does not lower an aggregate returned through a function pointer"
+                    "i686 does not lower an aggregate passed or returned through a function pointer"
                         .to_string(),
                 ));
             }

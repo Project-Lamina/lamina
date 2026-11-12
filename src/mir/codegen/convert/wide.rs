@@ -1423,6 +1423,7 @@ pub(super) fn lower_instruction<'a>(
                 ret,
                 ret_ty,
                 ret_aggregate: None,
+                arg_aggregates: Vec::new(),
             });
         }
         IRInst::IntToFloat {

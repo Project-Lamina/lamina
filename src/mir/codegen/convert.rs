@@ -2324,8 +2324,24 @@ fn convert_instruction<'a>(
                 .filter(|(ty, _)| !zero_sized(ty, facts.module, layout))
                 .collect();
             let fixed = variadic_fixed.unwrap_or(passed.len());
+            let mut arg_aggregates = Vec::new();
             for (index, (arg_ty, argument)) in passed.into_iter().enumerate() {
-                let mut mir_ty = map_ir_type(arg_ty, layout)?;
+                let aggregate = match resolve_type_names(arg_ty, &facts.module.type_declarations)
+                    .filter(is_aggregate)
+                {
+                    Some(ty) => classify_aggregate(
+                        &ty,
+                        "argument of a call through a function pointer",
+                        layout,
+                        int64_regs,
+                    )?,
+                    None => None,
+                };
+                arg_aggregates.push(aggregate);
+                let mut mir_ty = match aggregate {
+                    Some(_) => MirType::Scalar(ScalarType::Ptr),
+                    None => map_ir_type(arg_ty, layout)?,
+                };
                 let mut operand = resolve_operand(argument, vreg_alloc, var_to_reg, globals)?;
                 normalize_lowered_literal(&mut operand, mir_ty);
                 if index >= fixed && mir_ty == MirType::Scalar(ScalarType::F32) {
@@ -2388,6 +2404,7 @@ fn convert_instruction<'a>(
                 ret,
                 ret_ty,
                 ret_aggregate,
+                arg_aggregates,
             });
             instructions.extend(result_address);
             if let Some(name) = result.filter(|_| zero_return) {

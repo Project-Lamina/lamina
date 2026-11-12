@@ -2095,10 +2095,11 @@ fn emit_block<W: Write>(
                 ret,
                 ret_ty,
                 ret_aggregate,
+                arg_aggregates,
             } => {
-                if ret_aggregate.is_some() {
+                if ret_aggregate.is_some() || arg_aggregates.iter().any(Option::is_some) {
                     return Err(LaminaError::CodegenError(CodegenError::UnsupportedFeature(
-                        "AArch64 does not lower an aggregate returned through a function pointer"
+                        "AArch64 does not lower an aggregate passed or returned through a function pointer"
                             .to_string(),
                     )));
                 }

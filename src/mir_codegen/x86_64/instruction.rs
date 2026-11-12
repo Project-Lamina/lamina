@@ -1,7 +1,7 @@
 use super::variadic::VaArea;
 use super::*;
 use crate::mir_codegen::common::emit_source_loc;
-use crate::mir_codegen::common::{align_up, unsupported_io};
+use crate::mir_codegen::common::unsupported_io;
 use lamina_mir::{EightbyteClass, IntOverflowOp, SourceLoc, TlsModel};
 use lamina_platform::PointerWidth;
 
@@ -2294,8 +2294,17 @@ pub(super) fn emit_instruction_x86_64(
             ret,
             ret_ty,
             ret_aggregate,
+            arg_aggregates,
         } => {
-            let descs: Vec<ArgDesc> = arg_types.iter().copied().map(ArgDesc::scalar).collect();
+            let descs: Vec<ArgDesc> = arg_types
+                .iter()
+                .copied()
+                .enumerate()
+                .map(|(index, ty)| ArgDesc {
+                    ty,
+                    aggregate: arg_aggregates.get(index).copied().flatten(),
+                })
+                .collect();
             let sret_result = ret_aggregate
                 .filter(|aggregate| returns_through_pointer(*aggregate, target_os))
                 .and_then(|_| match ret {

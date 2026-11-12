@@ -883,6 +883,9 @@ pub enum Instruction {
         /// Set when the callee returns an aggregate by value. `ret` then names the frame
         /// slot the words land in.
         ret_aggregate: Option<Aggregate>,
+        /// One entry per argument, set where that argument is an aggregate passed by
+        /// value. The operand is then the address of its object.
+        arg_aggregates: Vec<Option<Aggregate>>,
     },
 
     // Tail call - function call in tail position that can be optimized to a jump

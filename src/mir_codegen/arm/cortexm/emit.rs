@@ -381,11 +381,12 @@ pub(crate) fn emit_instruction<W: Write>(
             variadic_fixed,
             ret,
             ret_aggregate,
+            arg_aggregates,
             ..
         } => {
-            if ret_aggregate.is_some() {
+            if ret_aggregate.is_some() || arg_aggregates.iter().any(Option::is_some) {
                 return Err(unsupported(
-                    "Cortex-M does not lower an aggregate returned through a function pointer"
+                    "Cortex-M does not lower an aggregate passed or returned through a function pointer"
                         .to_string(),
                 ));
             }
