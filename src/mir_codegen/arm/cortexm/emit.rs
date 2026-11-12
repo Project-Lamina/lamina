@@ -380,17 +380,26 @@ pub(crate) fn emit_instruction<W: Write>(
             args,
             variadic_fixed,
             ret,
+            ret_aggregate,
             ..
-        } => call::emit_call_indirect(
-            w,
-            target,
-            arg_types,
-            args,
-            *variadic_fixed,
-            ret.as_ref(),
-            ctx,
-            scratch,
-        )?,
+        } => {
+            if ret_aggregate.is_some() {
+                return Err(unsupported(
+                    "Cortex-M does not lower an aggregate returned through a function pointer"
+                        .to_string(),
+                ));
+            }
+            call::emit_call_indirect(
+                w,
+                target,
+                arg_types,
+                args,
+                *variadic_fixed,
+                ret.as_ref(),
+                ctx,
+                scratch,
+            )?
+        }
         MirInst::TailCall { name, args } => call::emit_tail_call(w, name, args, ctx, scratch)?,
         MirInst::Ret { value } => call::emit_return(w, value.as_ref(), ctx, scratch)?,
 

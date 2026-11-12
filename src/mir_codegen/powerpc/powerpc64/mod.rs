@@ -1639,7 +1639,14 @@ fn emit_instruction_ppc64<W: Write>(
             variadic_fixed,
             ret,
             ret_ty,
+            ret_aggregate,
         } => {
+            if ret_aggregate.is_some() {
+                return Err(LaminaError::CodegenError(CodegenError::UnsupportedFeature(
+                    "PowerPC64 does not lower an aggregate returned through a function pointer"
+                        .to_string(),
+                )));
+            }
             let arg_regs = Ppc64Abi::ARG_REGISTERS;
             let kinds: Vec<ArgKind> = arg_types.iter().map(|&ty| ArgKind::scalar(ty)).collect();
             let places = classify_ppc64_arguments(&kinds, 0);

@@ -1056,7 +1056,14 @@ fn emit_instruction<W: Write>(
             variadic_fixed,
             ret,
             ret_ty,
+            ret_aggregate,
         } => {
+            if ret_aggregate.is_some() {
+                return Err(unsupported(
+                    "MIPS64 does not lower an aggregate returned through a function pointer"
+                        .to_string(),
+                ));
+            }
             let kinds: Vec<ArgKind> = arg_types.iter().copied().map(ArgKind::scalar).collect();
             pass_arguments(writer, args, &kinds, slots, None, *variadic_fixed)?;
             load_operand(target, writer, slots, T9)?;

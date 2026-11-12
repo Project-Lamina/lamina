@@ -7,7 +7,7 @@ use crate::types::AddressSpace;
 use crate::{
     module::TlsModel,
     register::{Register, VirtualReg},
-    types::{MirType, ScalarType},
+    types::{Aggregate, MirType, ScalarType},
 };
 use std::fmt;
 
@@ -880,6 +880,9 @@ pub enum Instruction {
         variadic_fixed: Option<usize>,
         ret: Option<Register>,
         ret_ty: Option<MirType>,
+        /// Set when the callee returns an aggregate by value. `ret` then names the frame
+        /// slot the words land in.
+        ret_aggregate: Option<Aggregate>,
     },
 
     // Tail call - function call in tail position that can be optimized to a jump

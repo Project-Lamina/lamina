@@ -2343,13 +2343,41 @@ fn convert_instruction<'a>(
                 mir_args.push(operand);
             }
             let zero_return = zero_sized(return_type, facts.module, layout);
+            let returned = (!zero_return)
+                .then(|| resolve_type_names(return_type, &facts.module.type_declarations))
+                .flatten()
+                .filter(is_aggregate);
+            let ret_aggregate = match &returned {
+                Some(ty) => classify_aggregate(
+                    ty,
+                    "return of a call through a function pointer",
+                    layout,
+                    int64_regs,
+                )?,
+                None => None,
+            };
             let ret_ty = match return_type {
                 IRType::Void => None,
-                _ if zero_return => None,
+                _ if zero_return || ret_aggregate.is_some() => None,
                 other => Some(map_ir_type(other, layout)?),
             };
+            let mut result_address = None;
             let ret = match result {
-                Some(name) if !zero_return => Some(resolve_or_alloc(name, vreg_alloc, var_to_reg)),
+                Some(name) if !zero_return => {
+                    let dst = resolve_or_alloc(name, vreg_alloc, var_to_reg);
+                    match ret_aggregate {
+                        Some(aggregate) => {
+                            let slot = vreg_alloc.allocate_gpr();
+                            let words = aggregate.words();
+                            if words > 1 {
+                                reservations.insert(slot, words - 1);
+                            }
+                            result_address = Some(Instruction::StackAddr { dst, slot });
+                            Some(Register::Virtual(slot))
+                        }
+                        None => Some(dst),
+                    }
+                }
                 _ => None,
             };
             instructions.push(Instruction::CallIndirect {
@@ -2359,7 +2387,9 @@ fn convert_instruction<'a>(
                 variadic_fixed: *variadic_fixed,
                 ret,
                 ret_ty,
+                ret_aggregate,
             });
+            instructions.extend(result_address);
             if let Some(name) = result.filter(|_| zero_return) {
                 let dst = resolve_or_alloc(name, vreg_alloc, var_to_reg);
                 instructions.push(zero_sized_address(dst, vreg_alloc));

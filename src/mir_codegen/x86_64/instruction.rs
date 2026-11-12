@@ -2516,12 +2516,20 @@ pub(super) fn emit_instruction_x86_64(
             variadic_fixed: _,
             ret,
             ret_ty,
+            ret_aggregate,
         } => {
             let abi = X86ABI::new(target_os);
             let arg_regs = abi.arg_registers();
             let descs: Vec<ArgDesc> = arg_types.iter().copied().map(ArgDesc::scalar).collect();
             let types: Vec<MirType> = arg_types.clone();
-            let locations = classify_argument_descs(&descs, target_os);
+            let sret_result = ret_aggregate
+                .filter(|aggregate| returns_through_pointer(*aggregate, target_os))
+                .and_then(|_| match ret {
+                    Some(Register::Virtual(vreg)) => stack_slots.get(vreg).copied(),
+                    _ => None,
+                });
+            let locations =
+                classify_argument_descs_with_sret(&descs, target_os, sret_result.is_some());
             let stack_indices: Vec<usize> = locations
                 .iter()
                 .enumerate()
@@ -2582,6 +2590,9 @@ pub(super) fn emit_instruction_x86_64(
                     .count();
                 writeln!(writer, "    movl ${xmm_count}, %eax")?;
             }
+            if let Some(offset) = sret_result {
+                writeln!(writer, "    leaq {offset}(%rbp), %{}", arg_regs[0])?;
+            }
             writeln!(writer, "    call *%r11")?;
 
             if target_os == TargetOperatingSystem::Windows {
@@ -2600,8 +2611,38 @@ pub(super) fn emit_instruction_x86_64(
             }
 
             if let Some(Register::Virtual(vreg)) = ret {
-                match ret_ty {
-                    Some(ty) if ty.is_float() => {
+                match (ret_aggregate, ret_ty) {
+                    (Some(_), _) if sret_result.is_some() => {
+                        writer.rax_value = None;
+                    }
+                    (Some(aggregate), _) => {
+                        let base = *stack_slots.get(vreg).ok_or_else(|| {
+                            LaminaError::ValidationError(
+                                "aggregate result has no frame slot".to_string(),
+                            )
+                        })?;
+                        let mut integer_returns = ["rax", "rdx"].into_iter();
+                        let mut sse_returns = ["xmm0", "xmm1"].into_iter();
+                        for word in 0..aggregate.words() {
+                            let source = match aggregate.eightbyte_class(word) {
+                                EightbyteClass::Integer => integer_returns.next(),
+                                EightbyteClass::Sse => sse_returns.next(),
+                            }
+                            .ok_or_else(|| {
+                                LaminaError::ValidationError(
+                                    "aggregate result needs more return registers than the ABI has"
+                                        .to_string(),
+                                )
+                            })?;
+                            writeln!(
+                                writer,
+                                "    movq %{source}, {}(%rbp)",
+                                base + (word as i32) * 8
+                            )?;
+                        }
+                        writer.rax_value = None;
+                    }
+                    (None, Some(ty)) if ty.is_float() => {
                         store_xmm_to_register("xmm0", vreg, writer, reg_alloc, stack_slots, ty)?;
                     }
                     _ => store_rax_to_register(vreg, writer, reg_alloc, stack_slots)?,

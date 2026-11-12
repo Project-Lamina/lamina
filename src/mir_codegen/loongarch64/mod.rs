@@ -794,7 +794,14 @@ fn emit_instruction<W: Write>(
             variadic_fixed,
             ret,
             ret_ty,
+            ret_aggregate,
         } => {
+            if ret_aggregate.is_some() {
+                return Err(unsupported(
+                    "LoongArch64 does not lower an aggregate returned through a function pointer"
+                        .to_string(),
+                ));
+            }
             let mut types = arg_types.clone();
             if let Some(fixed) = variadic_fixed {
                 integer_past_fixed(&mut types, *fixed);

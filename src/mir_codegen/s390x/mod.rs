@@ -1045,7 +1045,14 @@ fn emit_instruction<W: Write>(
             variadic_fixed: _,
             ret,
             ret_ty,
+            ret_aggregate,
         } => {
+            if ret_aggregate.is_some() {
+                return Err(unsupported(
+                    "s390x does not lower an aggregate returned through a function pointer"
+                        .to_string(),
+                ));
+            }
             let kinds: Vec<ArgKind> = arg_types.iter().copied().map(ArgKind::scalar).collect();
             pass_arguments(writer, args, &kinds, slots, None)?;
             load_operand(target, writer, slots, T1)?;

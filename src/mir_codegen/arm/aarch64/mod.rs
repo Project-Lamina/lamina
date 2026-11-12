@@ -2094,7 +2094,14 @@ fn emit_block<W: Write>(
                 variadic_fixed,
                 ret,
                 ret_ty,
+                ret_aggregate,
             } => {
+                if ret_aggregate.is_some() {
+                    return Err(LaminaError::CodegenError(CodegenError::UnsupportedFeature(
+                        "AArch64 does not lower an aggregate returned through a function pointer"
+                            .to_string(),
+                    )));
+                }
                 let kinds: Vec<ArgKind> = arg_types
                     .iter()
                     .map(|ty| ArgKind::of(*ty, None, pointer_width))

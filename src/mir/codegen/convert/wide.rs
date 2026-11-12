@@ -1422,6 +1422,7 @@ pub(super) fn lower_instruction<'a>(
                 variadic_fixed: *variadic_fixed,
                 ret,
                 ret_ty,
+                ret_aggregate: None,
             });
         }
         IRInst::IntToFloat {
