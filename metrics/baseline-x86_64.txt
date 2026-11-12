@@ -497,7 +497,7 @@ frame test_u64_array_operations 96
 frame test_u8_array_operations 80
 
 [array_operations_comprehensive O1]
-insns 520
+insns 521
 spills 49
 calls 29
 branches 5
@@ -2815,7 +2815,7 @@ frame print_digits 16
 frame test_multi_type_arrays 32
 
 [gep_variable_indices O3]
-insns 356
+insns 355
 spills 26
 calls 10
 branches 17
@@ -2875,7 +2875,7 @@ frame put_u64 48
 frame read_b 32
 
 [getfieldptr_param_layout O1]
-insns 151
+insns 152
 spills 18
 calls 6
 branches 3
@@ -3778,7 +3778,7 @@ frame split 128
 frame tail 80
 
 [i128_abi O3]
-insns 1368
+insns 1367
 spills 155
 calls 17
 branches 21
@@ -10171,7 +10171,7 @@ frame test_multiple_operations 192
 frame test_sequential_access 112
 
 [load_store_operations O1]
-insns 252
+insns 251
 spills 16
 calls 5
 branches 3
@@ -10827,7 +10827,7 @@ frame print_i64 64
 frame put_u64 48
 
 [neon_vectorized_loops O1]
-insns 1916
+insns 1898
 spills 43
 calls 62
 branches 183
@@ -10866,7 +10866,7 @@ frame print_i64 16
 frame put_u64 16
 
 [neon_vectorized_loops O2]
-insns 2649
+insns 2631
 spills 99
 calls 61
 branches 241
@@ -10904,7 +10904,7 @@ frame main 16
 frame put_u64 16
 
 [neon_vectorized_loops O3]
-insns 2853
+insns 2835
 spills 105
 calls 61
 branches 331
@@ -11004,7 +11004,7 @@ frame three 0
 frame two 0
 
 [odd_sized_global_addresses O1]
-insns 146
+insns 147
 spills 28
 calls 18
 branches 1
@@ -11130,7 +11130,7 @@ frame put_u64 48
 frame read_word 48
 
 [packed_struct_layout O1]
-insns 318
+insns 319
 spills 70
 calls 41
 branches 3
@@ -11142,7 +11142,7 @@ frame put_u64 16
 frame read_word 16
 
 [packed_struct_layout O2]
-insns 1203
+insns 1204
 spills 135
 calls 25
 branches 47
@@ -11152,7 +11152,7 @@ frame put_u64 16
 frame read_word 16
 
 [packed_struct_layout O3]
-insns 1190
+insns 1191
 spills 121
 calls 25
 branches 47
@@ -11303,7 +11303,7 @@ frame test_u64_pointer_operations 64
 frame test_u8_pointer_operations 64
 
 [pointer_operations_comprehensive O1]
-insns 432
+insns 436
 spills 46
 calls 29
 branches 3
@@ -12520,7 +12520,7 @@ frame test_struct_array_operations 208
 frame test_struct_copy_operations 144
 
 [struct_operations_comprehensive O1]
-insns 420
+insns 416
 spills 32
 calls 19
 branches 3
