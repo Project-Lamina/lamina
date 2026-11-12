@@ -62,6 +62,7 @@ pub(super) fn instruction_clobbers(
         MirInst::IntUnary { .. } => vec!["rcx"],
         MirInst::IntRotate { .. } => vec!["rcx", "rdx"],
         MirInst::IntCmp { .. }
+        | MirInst::Load { .. }
         | MirInst::Store { .. }
         | MirInst::Lea { .. }
         | MirInst::Select { .. } => scratch,
