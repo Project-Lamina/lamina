@@ -159,7 +159,7 @@ pub(super) fn compile_single_function_x86_64(
     // frame nor clobbers anything a real call would.
     let is_leaf = !func.blocks.iter().any(|b| {
         b.instructions.iter().any(|i| match &i.instr {
-            MirInst::Call { .. } => true,
+            MirInst::Call { .. } | MirInst::CallIndirect { .. } => true,
             MirInst::TailCall { name, .. } => name != func_name,
             _ => false,
         })
