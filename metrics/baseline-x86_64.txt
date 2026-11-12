@@ -905,6 +905,48 @@ frame put_u64 16
 frame report 16
 frame slot 0
 
+[callptr_returns_aggregate O0]
+insns 282
+spills 130
+calls 8
+branches 1
+frame main 288
+frame make_big 176
+frame make_pair 112
+frame print_i64 32
+frame put_u64 48
+
+[callptr_returns_aggregate O1]
+insns 188
+spills 16
+calls 8
+branches 1
+frame main 96
+frame make_big 64
+frame make_pair 32
+frame print_i64 16
+frame put_u64 16
+
+[callptr_returns_aggregate O2]
+insns 178
+spills 17
+calls 7
+branches 1
+frame main 64
+frame make_big 32
+frame make_pair 16
+frame put_u64 16
+
+[callptr_returns_aggregate O3]
+insns 178
+spills 17
+calls 7
+branches 1
+frame main 64
+frame make_big 32
+frame make_pair 16
+frame put_u64 16
+
 [callptr_variadic O0]
 insns 26
 spills 7
