@@ -40,7 +40,12 @@ pub struct RuntimeResult {
     pub function_ptr: *const u8,
 }
 
-/// Compile MIR module to executable memory using runtime compilation
+/// Compile MIR module to executable memory using runtime compilation.
+///
+/// Signatures with f64, pointer or aggregate parameters and results are called through
+/// this function: transmute `function_ptr` to the `extern "C"` fn type of the entry, and
+/// keep the returned `RuntimeResult` alive while the call runs. `execute_jit_function`
+/// only takes i64 parameters.
 pub fn compile_to_runtime(
     _module: &MirModule,
     _target_arch: TargetArchitecture,
