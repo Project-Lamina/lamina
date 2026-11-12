@@ -375,7 +375,14 @@ def run_timeout(target):
     a 32-bit target splits every i64 operation into a register pair."""
     return 60 if target is None else 900
 
-def run_program(argv, cwd, stdin_input=None, timeout=60):
+# Stdin for the testcases that read it, so each run sees the same input.
+STDIN_INPUTS = {
+    'stdin.lamina': 'A\nBUFFER_TEST\nB',
+    'io_buffer.lamina': 'Buf',
+    'readbyte_nul.lamina': 'a\x00b',
+}
+
+def run_program(argv, cwd, stdin_input=None, timeout=60, env=None):
     """Run a program and return (success, stdout, stderr, exit_code)."""
     stdin_arg = {'input': stdin_input} if stdin_input is not None else {'stdin': subprocess.DEVNULL}
     try:
@@ -386,6 +393,7 @@ def run_program(argv, cwd, stdin_input=None, timeout=60):
             cwd=cwd,
             timeout=timeout,
             errors='replace',
+            env=env,
             **stdin_arg,
         )
     except subprocess.TimeoutExpired:
@@ -419,6 +427,35 @@ def run_raw_output(argv, project_root):
         )
     return True, result.stdout.replace(b"\r\n", b"\n")
 
+# Testcases `lamina --jit` runs in-process; each must print what its AOT build prints.
+# The JIT mode is x86_64 Linux only for now, and runs only these testcases.
+JIT_TESTCASES = {
+}
+
+def jit_host_problem():
+    """Why the JIT mode cannot run on this host, or None."""
+    if platform.system() == 'Linux' and platform.machine() in ('x86_64', 'AMD64'):
+        return None
+    return 'the JIT mode runs on x86_64 Linux only'
+
+def compile_and_run_jit(test_path):
+    """Run a testcase through `lamina --jit` and return (success, output_lines, stderr).
+
+    LAMINA_JIT_NO_FALLBACK makes a failed in-memory compile an error. Without it the
+    CLI quietly runs the AOT build instead, and this mode would pass for the wrong reason.
+    """
+    project_root = Path(__file__).parent
+    test_path = Path(test_path)
+    env = dict(os.environ, LAMINA_JIT_NO_FALLBACK='1')
+    argv = ['cargo', 'run', '--release', '--quiet', '--', str(test_path), '--jit']
+    success, stdout, stderr, exit_code = run_program(
+        argv, project_root, STDIN_INPUTS.get(test_path.name), 300, env
+    )
+    if is_crash(exit_code):
+        return False, execution_failure(stdout, stderr, exit_code), ''
+    output_lines = [line.strip() for line in stdout.split('\n') if line.strip()]
+    return True, output_lines, stderr
+
 def compile_and_run_test(test_path, use_mir=False, target=None, opt_level=None):
     """Compile and run a test case, return the output lines"""
     project_root = Path(__file__).parent
@@ -434,13 +471,6 @@ def compile_and_run_test(test_path, use_mir=False, target=None, opt_level=None):
     output_dir.mkdir(parents=True, exist_ok=True)
     executable_path = str((output_dir / executable_name).resolve())
     
-    # Define stdin input for interactive tests
-    stdin_inputs = {
-        'stdin.lamina': 'A\nBUFFER_TEST\nB',
-        'io_buffer.lamina': 'Buf',
-        'readbyte_nul.lamina': 'a\x00b',
-    }
-
     # Compile the test
     cmd_flags = "--emit-asm" if use_mir else ""
     target_flag = f"--target {target}" if target else ""
@@ -460,7 +490,7 @@ def compile_and_run_test(test_path, use_mir=False, target=None, opt_level=None):
     if test_path.name == 'io_types.lamina':
         return run_raw_output(argv, project_root)
 
-    stdin_input = stdin_inputs.get(test_path.name)
+    stdin_input = STDIN_INPUTS.get(test_path.name)
     _, stdout, stderr, exit_code = run_program(
         argv, project_root, stdin_input, run_timeout(target)
     )
@@ -474,7 +504,7 @@ def compile_and_run_test(test_path, use_mir=False, target=None, opt_level=None):
 
     return True, output_lines
 
-def run_tests(use_mir=False, target=None, report_only=False, opt_level=None):
+def run_tests(use_mir=False, target=None, report_only=False, opt_level=None, jit=False):
     crashes = Path(__file__).parent / 'target' / 'crashes.txt'
     try:
         crashes.parent.mkdir(parents=True, exist_ok=True)
@@ -483,6 +513,12 @@ def run_tests(use_mir=False, target=None, report_only=False, opt_level=None):
         pass
     """Run all test cases and report results"""
     mode = "MIR assembly" if use_mir else "default"
+    if jit:
+        problem = jit_host_problem()
+        if problem:
+            print_colored(f"⏭️  Skipping JIT run: {problem}", Colors.YELLOW)
+            return 0
+        mode = "JIT"
     if target:
         problem = cross_toolchain_problem(target)
         if problem:
@@ -504,6 +540,12 @@ def run_tests(use_mir=False, target=None, report_only=False, opt_level=None):
     test_files = discover("testcases/*.lamina")
     benchmark_files = discover("benchmarks/*/*.lamina")
     all_tests = test_files + benchmark_files
+    if jit:
+        all_tests = [p for p in all_tests if Path(p).name in JIT_TESTCASES]
+        print_colored(f"Running {len(all_tests)} testcases under --jit", Colors.BLUE)
+        if not all_tests:
+            print_colored("No testcases are listed in JIT_TESTCASES yet", Colors.YELLOW)
+            return 0
 
     for test_path in all_tests:
         test_name = Path(test_path).name
@@ -523,7 +565,11 @@ def run_tests(use_mir=False, target=None, report_only=False, opt_level=None):
             failed += 1
             continue
 
-        success, result = compile_and_run_test(test_path, use_mir, target, opt_level)
+        if jit:
+            success, result, stderr = compile_and_run_jit(test_path)
+        else:
+            success, result = compile_and_run_test(test_path, use_mir, target, opt_level)
+            stderr = ''
         
         if not success:
             print_colored(f"\n❌ FAILED {test_name}: {result}", Colors.RED)
@@ -541,9 +587,11 @@ def run_tests(use_mir=False, target=None, report_only=False, opt_level=None):
             print_colored(f"\n❌ FAILED {test_name}: Output mismatch", Colors.RED)
             print(f"   Expected: {expected_output}")
             print(f"   Actual:   {actual_output}")
-            failures.append(
-                (test_name, f"Output mismatch; expected {expected_output}, got {actual_output}")
-            )
+            reason = f"Output mismatch; expected {expected_output}, got {actual_output}"
+            if stderr:
+                print(f"   stderr:   {stderr}")
+                reason += f"; stderr: {stderr}"
+            failures.append((test_name, reason))
             failed += 1
     
     # Summary
@@ -561,7 +609,7 @@ def run_tests(use_mir=False, target=None, report_only=False, opt_level=None):
             print_colored(f"  {name}: {reason}", Colors.RED)
     return failed
 
-def run_levels(use_mir=False, target=None, report_only=False, opt_level=None):
+def run_levels(use_mir=False, target=None, report_only=False, opt_level=None, jit=False):
     """Run the suite once per requested level and return the process exit code."""
     if opt_level is None:
         levels = [None]
@@ -569,6 +617,8 @@ def run_levels(use_mir=False, target=None, report_only=False, opt_level=None):
         levels = [0, 1, 2, 3]
     else:
         levels = [int(opt_level)]
+    if jit:
+        return 1 if run_tests(jit=True) and not report_only else 0
     failed = sum(run_tests(use_mir, target, report_only, level) for level in levels)
     return 1 if failed and not report_only else 0
 
@@ -652,15 +702,22 @@ if __name__ == "__main__":
                              'default; without it the suite never executes code built '
                              'by sroa, mem2reg, peephole, unrolling, CSE, the scheduler '
                              'or rotation. "all" runs the whole suite once per level')
+    parser.add_argument('--jit', action='store_true',
+                        help='Run the JIT-capable testcases through `lamina --jit` on the host '
+                             'and check their AOT output (x86_64 Linux only)')
     parser.add_argument('--report-only', action='store_true',
                         help='Print the counts and exit 0 even when testcases fail, '
                              'for platforms whose backend is still incomplete')
     
     args = parser.parse_args()
     
+    if args.jit and (args.mir or args.target or args.opt_level or args.test):
+        parser.error('--jit runs the JIT testcase set at the default optimization level; '
+                     'drop --mir, --target, --opt-level and the test name')
+
     if args.list:
         list_tests()
     elif args.test:
         run_single_test(args.test, args.mir, args.target)
     else:
-        sys.exit(run_levels(args.mir, args.target, args.report_only, args.opt_level))
+        sys.exit(run_levels(args.mir, args.target, args.report_only, args.opt_level, args.jit))
