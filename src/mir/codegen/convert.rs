@@ -2643,12 +2643,21 @@ fn convert_instruction<'a>(
             let IRType::Struct { fields, packed } = struct_type else {
                 return Err(FromIRError::UnsupportedType);
             };
-            let base = pointer_base(struct_ptr, vreg_alloc, var_to_reg, globals)?;
+            let mut instructions = Vec::new();
+            let base = pointer_base(
+                struct_ptr,
+                vreg_alloc,
+                var_to_reg,
+                globals,
+                layout,
+                &mut instructions,
+            )?;
             let dst = resolve_or_alloc(result, vreg_alloc, var_to_reg);
             let offset = struct_field_byte_offset(fields, *packed, *field_index, layout)
                 .and_then(|bytes| i64::try_from(bytes).ok())
                 .ok_or(FromIRError::UnsupportedType)?;
-            Ok(displace_pointer(dst, base, offset, vreg_alloc))
+            instructions.extend(displace_pointer(dst, base, offset, vreg_alloc));
+            Ok(instructions)
         }
         IRInst::GetElemPtr {
             result,
@@ -2657,7 +2666,15 @@ fn convert_instruction<'a>(
             element_type,
         } => {
             // Constant-index GEP -> single LEA; variable index currently unsupported in MIR single-op model
-            let base = pointer_base(array_ptr, vreg_alloc, var_to_reg, globals)?;
+            let mut prelude = Vec::new();
+            let base = pointer_base(
+                array_ptr,
+                vreg_alloc,
+                var_to_reg,
+                globals,
+                layout,
+                &mut prelude,
+            )?;
             let elem_size = sizeof_type(element_type, layout)
                 .and_then(|size| i64::try_from(size).ok())
                 .ok_or(FromIRError::UnsupportedInstruction)?;
@@ -2677,7 +2694,8 @@ fn convert_instruction<'a>(
                 let offset = iv
                     .checked_mul(elem_size)
                     .ok_or(FromIRError::UnsupportedInstruction)?;
-                Ok(displace_pointer(dst, base, offset, vreg_alloc))
+                prelude.extend(displace_pointer(dst, base, offset, vreg_alloc));
+                Ok(prelude)
             } else {
                 let index_op = resolve_operand(index, vreg_alloc, var_to_reg, globals)?;
                 let from = operand_type(&index_op, register_types)?;
@@ -2688,7 +2706,7 @@ fn convert_instruction<'a>(
                 let scaled = Register::Virtual(vreg_alloc.allocate_gpr());
                 let address = Register::Virtual(vreg_alloc.allocate_gpr());
                 let sum = Register::Virtual(vreg_alloc.allocate_gpr());
-                Ok(vec![
+                prelude.extend([
                     Instruction::IntConvert {
                         from,
                         to: word,
@@ -2725,7 +2743,8 @@ fn convert_instruction<'a>(
                         dst,
                         src: Operand::Register(sum),
                     },
-                ])
+                ]);
+                Ok(prelude)
             }
         }
         IRInst::Write {
@@ -3255,11 +3274,16 @@ fn displace_pointer(
 
 /// Register holding the address a field or element offset applies to. A global name
 /// resolves to its symbol address, the same register `load` and `store` use.
+/// The register an address is read from. A literal is an address the program named
+/// itself, which `offsetof` writes and a fixed device address uses, so it is
+/// materialized into a register of the target's own word.
 fn pointer_base<'a>(
     ptr: &IRVal<'a>,
     vreg_alloc: &mut VirtualRegAllocator,
     var_to_reg: &VarBindings<'a>,
     globals: &mut GlobalAddresses<'a>,
+    layout: TargetDataLayout,
+    prelude: &mut Vec<Instruction>,
 ) -> Result<Register, FromIRError> {
     match ptr {
         IRVal::Variable(id) => var_to_reg
@@ -3267,7 +3291,29 @@ fn pointer_base<'a>(
             .cloned()
             .ok_or(FromIRError::UnknownVariable),
         IRVal::Global(name) => globals.register(name, vreg_alloc),
-        IRVal::Constant(_) => Err(FromIRError::UnsupportedInstruction),
+        IRVal::Constant(literal) => {
+            let address = match literal {
+                IRLit::I64(value) => *value,
+                IRLit::I32(value) => i64::from(*value),
+                IRLit::U64(value) => *value as i64,
+                IRLit::U32(value) => i64::from(*value),
+                _ => return Err(FromIRError::UnsupportedInstruction),
+            };
+            let word = address_word(layout.pointer_width)?;
+            let immediate = match word.size_bytes(layout.pointer_width) {
+                4 => Immediate::I32(
+                    i32::try_from(address).map_err(|_| FromIRError::UnsupportedInstruction)?,
+                ),
+                _ => Immediate::I64(address),
+            };
+            let dst = Register::Virtual(vreg_alloc.allocate_gpr());
+            prelude.push(Instruction::Copy {
+                ty: word,
+                dst: dst.clone(),
+                src: Operand::Immediate(immediate),
+            });
+            Ok(dst)
+        }
     }
 }
 
