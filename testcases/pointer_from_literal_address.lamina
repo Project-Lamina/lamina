@@ -1,0 +1,39 @@
+# A field or element address taken from an address the program names itself, which is
+# what offsetof writes and what a fixed device address uses.
+
+type !S = struct { c: i8, i: i32, d: f64 }
+
+fn @put_u64(u64 %n) -> void {
+entry:
+  %q = div.u64 %n, 10
+  %r = rem.u64 %n, 10
+  %d = add.u64 %r, 48
+  %z = eq.u64 %q, 0
+  br %z, last, more
+more:
+  call @put_u64(%q)
+  jmp last
+last:
+  %w = writebyte %d
+  ret.void
+}
+
+fn @print_i64(i64 %n) -> void {
+entry:
+  %u = bitcast.i64.u64 %n
+  call @put_u64(%u)
+  %nl = writebyte 10
+  ret.void
+}
+
+fn @main() -> i64 {
+entry:
+  %f = getfieldptr.!S 0, 2
+  %off = ptrtoint.i64 %f
+  call @print_i64(%off)
+
+  %e = getelem.i32 4096, 3
+  %at = ptrtoint.i64 %e
+  call @print_i64(%at)
+  ret.i64 0
+}
