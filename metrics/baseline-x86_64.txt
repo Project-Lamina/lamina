@@ -11195,6 +11195,40 @@ branches 5
 frame main 48
 frame print_digits 32
 
+[pointer_from_literal_address O0]
+insns 84
+spills 27
+calls 4
+branches 1
+frame main 48
+frame print_i64 32
+frame put_u64 48
+
+[pointer_from_literal_address O1]
+insns 84
+spills 10
+calls 4
+branches 1
+frame main 16
+frame print_i64 16
+frame put_u64 16
+
+[pointer_from_literal_address O2]
+insns 85
+spills 9
+calls 3
+branches 1
+frame main 16
+frame put_u64 16
+
+[pointer_from_literal_address O3]
+insns 85
+spills 9
+calls 3
+branches 1
+frame main 16
+frame put_u64 16
+
 [pointer_operations O0]
 insns 361
 spills 134
