@@ -1,0 +1,89 @@
+# A call through a function pointer passes a struct by value: one small enough for the
+# argument registers, one wide enough to travel on the stack, and one beside scalars.
+
+type !Pair = struct { a: i64, b: i64 }
+type !Quad = struct { a: i64, b: i64, c: i64, d: i64 }
+
+fn @put_u64(u64 %n) -> void {
+entry:
+  %q = div.u64 %n, 10
+  %r = rem.u64 %n, 10
+  %d = add.u64 %r, 48
+  %z = eq.u64 %q, 0
+  br %z, last, more
+more:
+  call @put_u64(%q)
+  jmp last
+last:
+  %w = writebyte %d
+  ret.void
+}
+
+fn @print_i64(i64 %n) -> void {
+entry:
+  %u = bitcast.i64.u64 %n
+  call @put_u64(%u)
+  %nl = writebyte 10
+  ret.void
+}
+
+fn @pair_sum(!Pair %p) -> i64 {
+entry:
+  %pa = getfieldptr.!Pair %p, 0
+  %a = load.i64 %pa
+  %pb = getfieldptr.!Pair %p, 1
+  %b = load.i64 %pb
+  %s = add.i64 %a, %b
+  ret.i64 %s
+}
+
+fn @quad_sum(!Quad %q) -> i64 {
+entry:
+  %pa = getfieldptr.!Quad %q, 0
+  %a = load.i64 %pa
+  %pd = getfieldptr.!Quad %q, 3
+  %d = load.i64 %pd
+  %s = add.i64 %a, %d
+  ret.i64 %s
+}
+
+fn @mixed(i64 %head, !Pair %p, i64 %tail) -> i64 {
+entry:
+  %pb = getfieldptr.!Pair %p, 1
+  %b = load.i64 %pb
+  %s = add.i64 %head, %b
+  %t = add.i64 %s, %tail
+  ret.i64 %t
+}
+
+fn @main() -> i64 {
+entry:
+  %p = stackalloc.!Pair
+  %pa = getfieldptr.!Pair %p, 0
+  store.i64 %pa, 11
+  %pb = getfieldptr.!Pair %p, 1
+  store.i64 %pb, 22
+
+  %f = funcaddr @pair_sum
+  %r = callptr.i64 %f(!Pair %p)
+  call @print_i64(%r)
+
+  %q = stackalloc.!Quad
+  %qa = getfieldptr.!Quad %q, 0
+  store.i64 %qa, 100
+  %qb = getfieldptr.!Quad %q, 1
+  store.i64 %qb, 200
+  %qc = getfieldptr.!Quad %q, 2
+  store.i64 %qc, 300
+  %qd = getfieldptr.!Quad %q, 3
+  store.i64 %qd, 400
+
+  %g = funcaddr @quad_sum
+  %s = callptr.i64 %g(!Quad %q)
+  call @print_i64(%s)
+
+  %h = funcaddr @mixed
+  %t = callptr.i64 %h(i64 1000, !Pair %p, i64 7)
+  call @print_i64(%t)
+  ret.i64 0
+}
