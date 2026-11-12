@@ -4,6 +4,7 @@
 //! supporting System V AMD64 and Microsoft x64 calling conventions.
 
 mod atomic;
+mod call;
 pub mod constants;
 #[cfg(test)]
 mod cpu_level_tests;

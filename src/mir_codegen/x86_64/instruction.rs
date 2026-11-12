@@ -24,7 +24,7 @@ fn restore_saved_registers<W: Write>(
     Ok(())
 }
 
-fn widen_external_argument<W: Write>(
+pub(super) fn widen_external_argument<W: Write>(
     writer: &mut W,
     abi_extensions: &AbiExtensions,
     callee: &str,
@@ -40,7 +40,7 @@ fn widen_external_argument<W: Write>(
 /// Win64 passes a float in its xmm register and in the general register of the same
 /// position, so a variadic callee that reads it as an integer finds it there. Run after
 /// every general register is loaded, since the copies write argument registers.
-fn duplicate_win64_float_arguments(
+pub(super) fn duplicate_win64_float_arguments(
     writer: &mut impl Write,
     locations: &[ArgLocation],
     arg_regs: &[&str],
@@ -55,7 +55,7 @@ fn duplicate_win64_float_arguments(
     Ok(())
 }
 
-fn copy_exact_bytes_to_stack(
+pub(super) fn copy_exact_bytes_to_stack(
     writer: &mut impl Write,
     size: usize,
     src: &str,
@@ -97,12 +97,15 @@ fn copy_exact_bytes(
     Ok(())
 }
 
-enum StagedWord<'a> {
+pub(super) enum StagedWord<'a> {
     Gpr(&'a str),
     Xmm(usize),
 }
 
-fn load_register_arguments<W: Write, RA: LocalRegisterAllocator<PhysReg = &'static str>>(
+pub(super) fn load_register_arguments<
+    W: Write,
+    RA: LocalRegisterAllocator<PhysReg = &'static str>,
+>(
     writer: &mut RaxTrackingWriter<W>,
     args: &[Operand],
     types: &[MirType],
@@ -134,7 +137,7 @@ fn load_register_arguments<W: Write, RA: LocalRegisterAllocator<PhysReg = &'stat
 
 /// Loads one eight-byte word of an aggregate into rax. The argument operand holds the
 /// address of the caller's copy.
-fn load_aggregate_word<W: Write, RA: LocalRegisterAllocator<PhysReg = &'static str>>(
+pub(super) fn load_aggregate_word<W: Write, RA: LocalRegisterAllocator<PhysReg = &'static str>>(
     arg: &Operand,
     word: usize,
     writer: &mut RaxTrackingWriter<W>,
@@ -1540,10 +1543,7 @@ pub(super) fn emit_instruction_x86_64(
                     store_rax_to_register(vreg, writer, reg_alloc, stack_slots)?;
                 }
             } else {
-                let abi = X86ABI::new(target_os);
-                let arg_regs = abi.arg_registers();
                 let descs = abi_extensions.argument_descs(name, args);
-                let types: Vec<MirType> = descs.iter().map(|desc| desc.ty).collect();
                 // A callee returning a large aggregate writes it through a hidden
                 // pointer, which takes the first general register.
                 let sret_result = abi_extensions
@@ -1553,244 +1553,21 @@ pub(super) fn emit_instruction_x86_64(
                         Some(Register::Virtual(vreg)) => stack_slots.get(vreg).copied(),
                         _ => None,
                     });
-                let locations =
-                    classify_argument_descs_with_sret(&descs, target_os, sret_result.is_some());
-                // One entry per eight-byte slot, lowest slot first: an aggregate on the
-                // stack occupies as many as it has words.
-                // One entry per stack slot, lowest first. `None` is a padding slot that the
-                // classifier left between a 16-byte-aligned aggregate and the one before.
-                let mut stack_args: Vec<Option<(usize, usize)>> = Vec::new();
-                for (index, location) in locations.iter().enumerate() {
-                    match location {
-                        ArgLocation::Stack(_) => stack_args.push(Some((index, 0))),
-                        ArgLocation::StackWords { first, words } => {
-                            while stack_args.len() < *first {
-                                stack_args.push(None);
-                            }
-                            stack_args.extend((0..*words).map(|word| Some((index, word))));
-                        }
-                        ArgLocation::Gpr(_)
-                        | ArgLocation::Xmm(_)
-                        | ArgLocation::GprWords { .. }
-                        | ArgLocation::EightbyteWords { .. } => {}
-                    }
-                }
-                let num_stack_args = stack_args.len();
-
-                // Windows takes an aggregate that is not register sized as a pointer to a
-                // copy belonging to the caller, which goes above the outgoing arguments.
-                let mut copy_offsets: Vec<Option<usize>> = vec![None; descs.len()];
-                let mut copy_bytes = 0;
-                if target_os == TargetOperatingSystem::Windows {
-                    let base = align_up(
-                        windows::SHADOW_SPACE_SIZE as usize + (num_stack_args * stack::SLOT_SIZE),
-                        stack::ALIGNMENT,
-                    );
-                    for (index, desc) in descs.iter().enumerate() {
-                        if let Some(aggregate) = desc.aggregate
-                            && passed_by_reference(aggregate, target_os)
-                        {
-                            copy_offsets[index] = Some(base + copy_bytes);
-                            copy_bytes +=
-                                align_up(aggregate.words() * stack::SLOT_SIZE, stack::ALIGNMENT);
-                        }
-                    }
-                }
-
-                if target_os == TargetOperatingSystem::Windows {
-                    // Every Windows call gets home space, argument count aside:
-                    // the callee may spill into it whether or not it was passed
-                    // register arguments.
-                    let shadow_space = windows::SHADOW_SPACE_SIZE as usize;
-                    // Rounded up so rsp stays 16-aligned at the call; the
-                    // padding lands above the arguments, leaving their offsets
-                    // from rsp unchanged.
-                    let total_stack = align_up(
-                        shadow_space + (num_stack_args * stack::SLOT_SIZE),
-                        stack::ALIGNMENT,
-                    ) + copy_bytes;
-                    if total_stack > 0 {
-                        writeln!(writer, "    subq ${total_stack}, %rsp")?;
-                    }
-                    for (index, at) in copy_offsets.iter().enumerate() {
-                        let Some(at) = *at else {
-                            continue;
-                        };
-                        let size = descs[index].aggregate.map_or(0, |a| a.size);
-                        load_operand_to_rax(&args[index], writer, reg_alloc, stack_slots)?;
-                        copy_exact_bytes_to_stack(writer, size, "rax", at)?;
-                        writer.rax_value = None;
-                    }
-                    for (slot, entry) in stack_args.iter().enumerate() {
-                        let stack_offset = shadow_space + (slot * stack::SLOT_SIZE);
-                        // Windows never pads: its aggregates that need a stack slot are not
-                        // 16-byte aligned by value.
-                        let Some((index, word)) = *entry else {
-                            return Err(LaminaError::ValidationError(
-                                "Windows stack arguments cannot need alignment padding".to_string(),
-                            ));
-                        };
-                        if let Some(at) = copy_offsets[index] {
-                            writeln!(writer, "    leaq {at}(%rsp), %rax")?;
-                            writeln!(writer, "    movq %rax, {stack_offset}(%rsp)")?;
-                            continue;
-                        }
-                        if descs[index].aggregate.is_some() {
-                            load_aggregate_word(
-                                &args[index],
-                                word,
-                                writer,
-                                reg_alloc,
-                                stack_slots,
-                            )?;
-                        } else {
-                            load_operand_to_rax(&args[index], writer, reg_alloc, stack_slots)?;
-                            widen_external_argument(writer, abi_extensions, name, index, "rax")?;
-                        }
-                        writeln!(writer, "    movq %rax, {stack_offset}(%rsp)")?;
-                    }
-                } else {
-                    // An odd number of pushes would leave rsp 8 off at the call.
-                    if num_stack_args % 2 == 1 {
-                        writeln!(writer, "    subq $8, %rsp")?;
-                    }
-                    for entry in stack_args.iter().rev() {
-                        let Some((index, word)) = *entry else {
-                            writeln!(writer, "    pushq $0")?;
-                            continue;
-                        };
-                        if descs[index].aggregate.is_some() {
-                            load_aggregate_word(
-                                &args[index],
-                                word,
-                                writer,
-                                reg_alloc,
-                                stack_slots,
-                            )?;
-                        } else {
-                            load_operand_to_rax(&args[index], writer, reg_alloc, stack_slots)?;
-                            widen_external_argument(writer, abi_extensions, name, index, "rax")?;
-                        }
-                        writeln!(writer, "    pushq %rax")?;
-                    }
-                }
-
-                // A by-reference aggregate's register holds the address of the copy, so
-                // the scalar pass must leave it alone.
-                let mut scalar_locations = locations.clone();
-                for (index, at) in copy_offsets.iter().enumerate() {
-                    if at.is_some() {
-                        scalar_locations[index] = ArgLocation::Stack(usize::MAX);
-                    }
-                }
-
-                // Aggregate words are staged on the stack so that loading the scalar
-                // arguments cannot clobber an argument register already filled.
-                let mut staged: Vec<StagedWord> = Vec::new();
-                for (index, location) in locations.iter().enumerate() {
-                    if copy_offsets[index].is_some() {
-                        continue;
-                    }
-                    if let ArgLocation::EightbyteWords { places, words } = location {
-                        for (word, place) in places[..*words].iter().enumerate() {
-                            load_aggregate_word(
-                                &args[index],
-                                word,
-                                writer,
-                                reg_alloc,
-                                stack_slots,
-                            )?;
-                            writeln!(writer, "    pushq %rax")?;
-                            staged.push(match place {
-                                WordPlace::Gpr(gpr) => StagedWord::Gpr(arg_regs[*gpr]),
-                                WordPlace::Xmm(xmm) => StagedWord::Xmm(*xmm),
-                            });
-                        }
-                        continue;
-                    }
-                    let (first, words) = match location {
-                        ArgLocation::GprWords { first, words } => (*first, *words),
-                        ArgLocation::Gpr(gpr) if descs[index].aggregate.is_some() => (*gpr, 1),
-                        _ => continue,
-                    };
-                    for word in 0..words {
-                        load_aggregate_word(&args[index], word, writer, reg_alloc, stack_slots)?;
-                        writeln!(writer, "    pushq %rax")?;
-                        staged.push(StagedWord::Gpr(arg_regs[first + word]));
-                    }
-                }
-
-                load_register_arguments(
+                call::emit(
+                    &call::CallSite {
+                        name: Some(name),
+                        target: None,
+                        descs: &descs,
+                        args,
+                        sret_result,
+                        variadic: abi_extensions.may_be_variadic(name, args.len()),
+                    },
                     writer,
-                    args,
-                    &types,
-                    &scalar_locations,
-                    arg_regs,
                     reg_alloc,
                     stack_slots,
+                    target_os,
+                    abi_extensions,
                 )?;
-
-                for word in staged.iter().rev() {
-                    match word {
-                        StagedWord::Gpr(register) => writeln!(writer, "    popq %{register}")?,
-                        StagedWord::Xmm(xmm) => {
-                            writeln!(writer, "    popq %r11")?;
-                            writeln!(writer, "    movq %r11, %xmm{xmm}")?;
-                        }
-                    }
-                }
-                for (index, location) in locations.iter().enumerate() {
-                    if let ArgLocation::Gpr(gpr) = location
-                        && descs[index].aggregate.is_none()
-                    {
-                        widen_external_argument(
-                            writer,
-                            abi_extensions,
-                            name,
-                            index,
-                            arg_regs[*gpr],
-                        )?;
-                    }
-                }
-                if target_os == TargetOperatingSystem::Windows {
-                    duplicate_win64_float_arguments(writer, &locations, arg_regs)?;
-                }
-
-                for (index, at) in copy_offsets.iter().enumerate() {
-                    if let (Some(at), ArgLocation::Gpr(gpr)) = (*at, &locations[index]) {
-                        writeln!(writer, "    leaq {at}(%rsp), %{}", arg_regs[*gpr])?;
-                    }
-                }
-                if let Some(offset) = sret_result {
-                    writeln!(writer, "    leaq {offset}(%rbp), %{}", arg_regs[0])?;
-                }
-                if target_os != TargetOperatingSystem::Windows
-                    && abi_extensions.may_be_variadic(name, args.len())
-                {
-                    let xmm_count: usize = locations.iter().map(ArgLocation::xmm_words).sum();
-                    writeln!(writer, "    movl ${xmm_count}, %eax")?;
-                }
-                let mangled_name = abi.mangle_function_name(name);
-                writeln!(writer, "    call {mangled_name}")?;
-
-                if target_os == TargetOperatingSystem::Windows {
-                    // Every Windows call gets home space, argument count aside:
-                    // the callee may spill into it whether or not it was passed
-                    // register arguments.
-                    let shadow_space = windows::SHADOW_SPACE_SIZE as usize;
-                    let total_stack = align_up(
-                        shadow_space + (num_stack_args * stack::SLOT_SIZE),
-                        stack::ALIGNMENT,
-                    ) + copy_bytes;
-                    if total_stack > 0 {
-                        writeln!(writer, "    addq ${total_stack}, %rsp")?;
-                    }
-                } else if num_stack_args > 0 {
-                    let pushed = num_stack_args * stack::SLOT_SIZE;
-                    let padded = align_up(pushed, stack::ALIGNMENT);
-                    writeln!(writer, "    addq ${padded}, %rsp")?;
-                }
-
                 if let Some(ret_reg) = ret
                     && let Register::Virtual(vreg) = ret_reg
                 {
@@ -2518,98 +2295,30 @@ pub(super) fn emit_instruction_x86_64(
             ret_ty,
             ret_aggregate,
         } => {
-            let abi = X86ABI::new(target_os);
-            let arg_regs = abi.arg_registers();
             let descs: Vec<ArgDesc> = arg_types.iter().copied().map(ArgDesc::scalar).collect();
-            let types: Vec<MirType> = arg_types.clone();
             let sret_result = ret_aggregate
                 .filter(|aggregate| returns_through_pointer(*aggregate, target_os))
                 .and_then(|_| match ret {
                     Some(Register::Virtual(vreg)) => stack_slots.get(vreg).copied(),
                     _ => None,
                 });
-            let locations =
-                classify_argument_descs_with_sret(&descs, target_os, sret_result.is_some());
-            let stack_indices: Vec<usize> = locations
-                .iter()
-                .enumerate()
-                .filter_map(|(index, location)| {
-                    matches!(location, ArgLocation::Stack(_)).then_some(index)
-                })
-                .collect();
-            let num_stack_args = stack_indices.len();
-
-            if target_os == TargetOperatingSystem::Windows {
-                let shadow_space = windows::SHADOW_SPACE_SIZE as usize;
-                let total_stack = align_up(
-                    shadow_space + (num_stack_args * stack::SLOT_SIZE),
-                    stack::ALIGNMENT,
-                );
-                if total_stack > 0 {
-                    writeln!(writer, "    subq ${total_stack}, %rsp")?;
-                }
-                for (slot, &index) in stack_indices.iter().enumerate() {
-                    let stack_offset = shadow_space + (slot * stack::SLOT_SIZE);
-                    load_operand_to_rax(&args[index], writer, reg_alloc, stack_slots)?;
-                    writeln!(writer, "    movq %rax, {stack_offset}(%rsp)")?;
-                }
-            } else {
-                if num_stack_args % 2 == 1 {
-                    writeln!(writer, "    subq $8, %rsp")?;
-                }
-                for &index in stack_indices.iter().rev() {
-                    load_operand_to_rax(&args[index], writer, reg_alloc, stack_slots)?;
-                    writeln!(writer, "    pushq %rax")?;
-                }
-            }
-
-            // r11 is caller-saved and never an argument register, so the target
-            // survives loading the arguments.
-            load_operand_to_rax(target, writer, reg_alloc, stack_slots)?;
-            writeln!(writer, "    movq %rax, %r11")?;
-
-            load_register_arguments(
+            call::emit(
+                &call::CallSite {
+                    name: None,
+                    target: Some(target),
+                    descs: &descs,
+                    args,
+                    sret_result,
+                    // A prototypeless target may be variadic, and al carries the
+                    // vector-register count for one.
+                    variadic: true,
+                },
                 writer,
-                args,
-                &types,
-                &locations,
-                arg_regs,
                 reg_alloc,
                 stack_slots,
+                target_os,
+                abi_extensions,
             )?;
-            if target_os == TargetOperatingSystem::Windows {
-                duplicate_win64_float_arguments(writer, &locations, arg_regs)?;
-            }
-
-            if target_os != TargetOperatingSystem::Windows {
-                // al carries the vector-register count for a variadic callee, and a
-                // prototypeless target may be one.
-                let xmm_count = locations
-                    .iter()
-                    .filter(|location| matches!(location, ArgLocation::Xmm(_)))
-                    .count();
-                writeln!(writer, "    movl ${xmm_count}, %eax")?;
-            }
-            if let Some(offset) = sret_result {
-                writeln!(writer, "    leaq {offset}(%rbp), %{}", arg_regs[0])?;
-            }
-            writeln!(writer, "    call *%r11")?;
-
-            if target_os == TargetOperatingSystem::Windows {
-                let shadow_space = windows::SHADOW_SPACE_SIZE as usize;
-                let total_stack = align_up(
-                    shadow_space + (num_stack_args * stack::SLOT_SIZE),
-                    stack::ALIGNMENT,
-                );
-                if total_stack > 0 {
-                    writeln!(writer, "    addq ${total_stack}, %rsp")?;
-                }
-            } else if num_stack_args > 0 {
-                let pushed = num_stack_args * stack::SLOT_SIZE;
-                let padded = align_up(pushed, stack::ALIGNMENT);
-                writeln!(writer, "    addq ${padded}, %rsp")?;
-            }
-
             if let Some(Register::Virtual(vreg)) = ret {
                 match (ret_aggregate, ret_ty) {
                     (Some(_), _) if sret_result.is_some() => {
