@@ -232,4 +232,45 @@ mod tests {
         let result = compiler.compile(&module, None);
         assert!(matches!(result, Err(LaminaError::ValidationError(_))));
     }
+
+    #[cfg(all(feature = "encoder", target_arch = "x86_64", target_os = "linux"))]
+    mod typed_calls {
+        use crate::{
+            mir::codegen::from_ir_x86_64,
+            parser::parse_module,
+            runtime::{RuntimeResult, compile_to_runtime},
+        };
+        use lamina_platform::{TargetArchitecture, TargetOperatingSystem};
+        use std::mem::transmute;
+
+        fn compile_entry(source: &str, name: &str) -> RuntimeResult {
+            let ir_module = parse_module(source).expect("parse");
+            let module = from_ir_x86_64(&ir_module, "jit_test").expect("lower");
+            compile_to_runtime(
+                &module,
+                TargetArchitecture::X86_64,
+                TargetOperatingSystem::Linux,
+                Some(name),
+            )
+            .expect("compile")
+        }
+
+        const F64_PROGRAM: &str = r#"
+        fn @ints_then_f64(i64 %a, i64 %b, f64 %x) -> i64 {
+        entry:
+          %s = add.i64 %a, %b
+          ret.i64 %s
+        }
+        "#;
+
+        #[test]
+        fn f64_argument_passes_beside_integer_arguments() {
+            let entry = compile_entry(F64_PROGRAM, "@ints_then_f64");
+            // SAFETY: @ints_then_f64 takes two i64 and an f64 and returns i64; `entry` owns the code.
+            let call: extern "C" fn(i64, i64, f64) -> i64 =
+                unsafe { transmute(entry.function_ptr) };
+            assert_eq!(call(40, 2, 1.5), 42);
+            assert_eq!(call(-7, 10, f64::NAN), 3);
+        }
+    }
 }
