@@ -698,8 +698,22 @@ fn emit_instruction<W: Write>(
             false_val,
         } => {
             reject_wide(ty, "select")?;
+            // A float lives on the x87 stack, which has no conditional move, so the
+            // one that is wanted is the only one loaded.
             if ty.is_float() {
-                return Err(unsupported("i686 select on a floating-point value"));
+                let single = matches!(ty, MirType::Scalar(ScalarType::F32));
+                let otherwise = ctx.fresh_label("select_false");
+                let done = ctx.fresh_label("select_done");
+                load_operand(&Operand::Register(cond.clone()), writer, slots, EDX)?;
+                writeln!(writer, "    testl {EDX}, {EDX}")?;
+                writeln!(writer, "    je {otherwise}")?;
+                push_float(true_val, writer, slots, single)?;
+                writeln!(writer, "    jmp {done}")?;
+                writeln!(writer, "{otherwise}:")?;
+                push_float(false_val, writer, slots, single)?;
+                writeln!(writer, "{done}:")?;
+                pop_float(dst, writer, slots, single)?;
+                return Ok(());
             }
             load_operand(false_val, writer, slots, ECX)?;
             load_operand(true_val, writer, slots, EAX)?;

@@ -91,7 +91,6 @@ ILP32_UNSUPPORTED = {
 I686_UNSUPPORTED = {
     'fptoint_signed': 'x87 reports an out-of-range or NaN operand as the integer indefinite, not as the saturating result the contract names',
     'fptoint_unsigned': 'x87 reports an out-of-range or NaN operand as the integer indefinite, not as the saturating result the contract names',
-    'select_all_types': 'i686 select on a floating-point value is not implemented',
     **ILP32_UNSUPPORTED,
 }
 
