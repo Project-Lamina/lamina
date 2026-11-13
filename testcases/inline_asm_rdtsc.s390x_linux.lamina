@@ -1,0 +1,20 @@
+# The TOD clock is read twice with a delay between; it must not go backwards. The
+# clock is stored to memory rather than to a register, so the slot's address goes in.
+fn @main() -> i64 {
+entry:
+  %slot = stackalloc.i64
+  %a = asm.i64 "stckf 0($0)\nlg $1, 0($0)", in(reg) %slot, out(reg), clobber(memory)
+  %b = asm.i64 "lghi %r1, 2000\n1: aghi %r1, -1\njnz 1b\nstckf 0($0)\nlg $1, 0($0)", in(reg) %slot, out(reg), clobber(r1, memory, flags)
+  %d = sub.i64 %b, %a
+  %ok = gt.i64 %d, 0
+  br %ok, good, bad
+good:
+  %o = writebyte 79
+  %k = writebyte 75
+  %n = writebyte 10
+  ret.i64 0
+bad:
+  %f = writebyte 70
+  %n2 = writebyte 10
+  ret.i64 1
+}
