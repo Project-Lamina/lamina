@@ -409,19 +409,17 @@ pub fn parse_value_with_type_hint<'a>(
                 Err(state.error(format!("Expected 'false'\n  Hint: {hint}")))
             }
         }
-        Some('i') | Some('I') | Some('n') | Some('N') => {
-            match type_hint {
-                Type::Primitive(PrimitiveType::F32) => {
-                    Ok(Value::Constant(Literal::F32(state.parse_float_f32()?)))
-                }
-                Type::Primitive(PrimitiveType::F64) => {
-                    Ok(Value::Constant(Literal::F64(state.parse_float()?)))
-                }
-                _ => Err(state.error(format!(
-                    "An infinity or a NaN needs a float type, not {type_hint:?}"
-                ))),
+        Some('i') | Some('I') | Some('n') | Some('N') => match type_hint {
+            Type::Primitive(PrimitiveType::F32) => {
+                Ok(Value::Constant(Literal::F32(state.parse_float_f32()?)))
             }
-        }
+            Type::Primitive(PrimitiveType::F64) => {
+                Ok(Value::Constant(Literal::F64(state.parse_float()?)))
+            }
+            _ => Err(state.error(format!(
+                "An infinity or a NaN needs a float type, not {type_hint:?}"
+            ))),
+        },
         Some(c) if c.is_ascii_digit() || c == '-' => {
             if matches!(type_hint, Type::Primitive(PrimitiveType::F32)) {
                 if let Ok(f_val) = state.parse_float_f32() {

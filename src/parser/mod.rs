@@ -3304,7 +3304,10 @@ mod surface_tests {
         let module = parse_module(source).expect("empty struct parses");
         let printed = module.to_string();
         assert!(printed.contains("struct {}"), "{printed}");
-        assert_eq!(parse_module(&printed).expect("reparse").to_string(), printed);
+        assert_eq!(
+            parse_module(&printed).expect("reparse").to_string(),
+            printed
+        );
     }
 
     #[test]
