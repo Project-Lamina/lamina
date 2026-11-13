@@ -409,6 +409,19 @@ pub fn parse_value_with_type_hint<'a>(
                 Err(state.error(format!("Expected 'false'\n  Hint: {hint}")))
             }
         }
+        Some('i') | Some('I') | Some('n') | Some('N') => {
+            match type_hint {
+                Type::Primitive(PrimitiveType::F32) => {
+                    Ok(Value::Constant(Literal::F32(state.parse_float_f32()?)))
+                }
+                Type::Primitive(PrimitiveType::F64) => {
+                    Ok(Value::Constant(Literal::F64(state.parse_float()?)))
+                }
+                _ => Err(state.error(format!(
+                    "An infinity or a NaN needs a float type, not {type_hint:?}"
+                ))),
+            }
+        }
         Some(c) if c.is_ascii_digit() || c == '-' => {
             if matches!(type_hint, Type::Primitive(PrimitiveType::F32)) {
                 if let Ok(f_val) = state.parse_float_f32() {
@@ -496,4 +509,32 @@ fn parse_integer_literal<'a>(
     }
     let value = state.parse_wide_integer()?;
     integer_literal(value, hint).map_err(|message| state.error(message))
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::parser::parse_module;
+
+    #[test]
+    fn a_float_global_holds_an_infinity_or_a_nan() {
+        let text = "global $a: f64 = inf\n\
+                    global $b: f64 = -inf\n\
+                    global $c: f32 = NaN\n\
+                    global $d: f32 = -Infinity\n";
+        let module = parse_module(text).expect("module");
+        let printed = module.to_string();
+        assert!(printed.contains("inf"), "{printed}");
+        assert!(printed.contains("NaN"), "{printed}");
+        let round = parse_module(&printed).expect("the printed module parses again");
+        assert_eq!(round.to_string(), printed);
+    }
+
+    #[test]
+    fn an_infinity_needs_a_float_type() {
+        let error = parse_module("global $a: i32 = inf\n").expect_err("refused");
+        assert!(
+            format!("{error}").contains("float type"),
+            "unexpected message: {error}"
+        );
+    }
 }

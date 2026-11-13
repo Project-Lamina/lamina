@@ -440,6 +440,18 @@ impl<'a> ParserState<'a> {
             self.advance();
         }
 
+        // A float that is not finite has a name rather than digits, which is how
+        // Rust writes one and how every float type says what it holds.
+        for word in ["infinity", "inf", "nan"] {
+            let seen = self.input[self.position..]
+                .get(..word.len())
+                .is_some_and(|text| text.eq_ignore_ascii_case(word));
+            if seen {
+                self.advance_by(word.len());
+                return Ok(&self.input[start..self.position]);
+            }
+        }
+
         let mut has_digit = false;
 
         while !self.is_eof() && self.bytes[self.position].is_ascii_digit() {
