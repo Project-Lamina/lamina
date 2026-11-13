@@ -44,7 +44,6 @@ FLOAT_AGGREGATE_UNSUPPORTED = {
 CALLPTR_AGGREGATE_UNSUPPORTED = {
     'callptr_passes_aggregate': 'callptr carries no callee signature, so an aggregate cannot be classified across it',
     'callptr_returns_aggregate': 'callptr carries no callee signature, so an aggregate cannot be classified across it',
-    'va_list_forwarded': 'the backend reads a va_list only inside a variadic function',
 }
 
 # A target with 32-bit integer registers refuses, by name, every testcase whose
@@ -84,6 +83,11 @@ ILP32_UNSUPPORTED = {
     'thread_local_storage': 'thread-local storage is not implemented by this backend',
     'vector_operations': 'this backend has no vector unit',
     'zero_size_aggregates': 'an aggregate crossing a boundary holds at least one byte here',
+    # The backend walks a forwarded list correctly; what it is handed is wrong. A
+    # variadic argument is promoted to i64, and on a 32-bit target that is a register
+    # pair, but the caller passes an integer literal beyond the named parameters as a
+    # single word, so `va_arg.i64` reads one word of it and one of the next.
+    'va_list_forwarded': 'a variadic integer literal is passed as one word, and va_arg.i64 reads a pair',
     **FLOAT_AGGREGATE_UNSUPPORTED,
     **CALLPTR_AGGREGATE_UNSUPPORTED,
 }

@@ -141,13 +141,16 @@ pub(crate) fn emit<W: Write>(
     base: Option<i32>,
     scratch: &mut Scratch,
 ) -> Result<(), LaminaError> {
-    let Some(base) = base else {
-        return Err(unsupported(
-            "armv7 va_list access outside a variadic function".to_string(),
-        ));
-    };
+    // Only `va_start` needs the argument area of the function it stands in. Walking a
+    // list someone else started is what every vprintf-shaped function does (C99
+    // 7.15.1.1), and that reads the list alone.
     match inst {
         MirInst::VaStart { ap } => {
+            let Some(base) = base else {
+                return Err(unsupported(
+                    "armv7 va_start needs the argument area of a variadic function, and this one is not variadic".to_string(),
+                ));
+            };
             let list = scratch.alloc()?;
             let cursor = scratch.alloc()?;
             materialize(w, ap, list, frame)?;

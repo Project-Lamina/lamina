@@ -60,13 +60,16 @@ pub(super) fn emit<W: Write>(
     func: &Function,
     base: Option<i32>,
 ) -> Result<(), LaminaError> {
-    let Some(base) = base else {
-        return Err(unsupported(
-            "i686 va_list access outside a variadic function",
-        ));
-    };
+    // Only `va_start` needs the argument area of the function it stands in. Walking a
+    // list someone else started is what every vprintf-shaped function does (C99
+    // 7.15.1.1), and that reads the list alone.
     match inst {
         MirInst::VaStart { ap } => {
+            let Some(base) = base else {
+                return Err(unsupported(
+                    "i686 va_start needs the argument area of a variadic function, and this one is not variadic",
+                ));
+            };
             writeln!(writer, "    leal {base}(%ebp), {EAX}")?;
             load_operand(ap, writer, slots, ECX)?;
             writeln!(writer, "    movl {EAX}, ({ECX})")?;
