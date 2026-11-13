@@ -4,7 +4,7 @@ use crate::{
     Label, LaminaError,
     ir::{
         BasicBlock, Function, FunctionAnnotation, FunctionParameter, FunctionSignature,
-        Instruction, SourceLoc, Type,
+        Instruction, SourceLoc,
     },
     parser::{instructions::parse_instruction, state::ParserState, types::parse_type},
 };
