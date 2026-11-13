@@ -211,10 +211,9 @@ pub(super) fn emit<W: Write, RA: LocalRegisterAllocator<PhysReg = &'static str>>
     for (index, location) in locations.iter().enumerate() {
         if let ArgLocation::Gpr(gpr) = location
             && site.descs[index].aggregate.is_none()
+            && let Some(name) = site.name
         {
-            if let Some(name) = site.name {
-                widen_external_argument(writer, abi_extensions, name, index, arg_regs[*gpr])?;
-            }
+            widen_external_argument(writer, abi_extensions, name, index, arg_regs[*gpr])?;
         }
     }
     if target_os == TargetOperatingSystem::Windows {
