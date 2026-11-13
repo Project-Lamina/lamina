@@ -1104,8 +1104,12 @@ fn global_initializer(
             )));
         }
     };
-    let bytes = literal_bytes(name, literal, endianness)?;
-    if bytes.len() != ty.size_bytes(layout.pointer_width) {
+    let size = ty.size_bytes(layout.pointer_width);
+    let bytes = match widened_literal(literal, size, endianness) {
+        Some(bytes) => bytes,
+        None => literal_bytes(name, literal, endianness)?,
+    };
+    if bytes.len() != size {
         return Err(FromIRError::UnsupportedGlobal(format!(
             "@{name} initializer width does not match its type {ty}"
         )));
@@ -1114,6 +1118,37 @@ fn global_initializer(
         bytes: Some(bytes),
         relocations: Vec::new(),
     })
+}
+
+/// A whole-number literal at the width of the object it initializes, when it fits.
+///
+/// `global $p: ptr = 0` writes a null pointer, and the literal says nothing about how
+/// wide the object is, so the type decides.
+fn widened_literal(literal: &IRLit<'_>, size: usize, endianness: Endianness) -> Option<Vec<u8>> {
+    let value: i128 = match literal {
+        IRLit::I8(v) => i128::from(*v),
+        IRLit::I16(v) => i128::from(*v),
+        IRLit::I32(v) => i128::from(*v),
+        IRLit::I64(v) => i128::from(*v),
+        IRLit::U8(v) => i128::from(*v),
+        IRLit::U16(v) => i128::from(*v),
+        IRLit::U32(v) => i128::from(*v),
+        IRLit::U64(v) => i128::from(*v),
+        _ => return None,
+    };
+    if size == 0 || size > 16 {
+        return None;
+    }
+    let full = value.to_le_bytes();
+    let sign = if value < 0 { 0xff } else { 0x00 };
+    if full[size..].iter().any(|byte| *byte != sign) {
+        return None;
+    }
+    let mut bytes = full[..size].to_vec();
+    if endianness == Endianness::Big {
+        bytes.reverse();
+    }
+    Some(bytes)
 }
 
 /// Bytes of a literal in the target's byte order, at the width its own type takes.
