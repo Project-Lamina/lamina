@@ -121,7 +121,6 @@ RISCV64_UNSUPPORTED = {
     'load_store_alignment': 'the backend issues no unaligned store',
     'thread_local_storage': 'thread-local storage is not implemented for RISC-V',
     'vector_operations': 'vectors need the V extension, which rv64imafd does not carry',
-    **CALLPTR_AGGREGATE_UNSUPPORTED,
 }
 
 AARCH64_UNSUPPORTED: dict[str, str] = {}

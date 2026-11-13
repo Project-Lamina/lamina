@@ -1853,12 +1853,6 @@ fn emit_instruction_riscv<W: Write>(
             ret_aggregate,
             arg_aggregates,
         } => {
-            if ret_aggregate.is_some() || arg_aggregates.iter().any(Option::is_some) {
-                return Err(LaminaError::ValidationError(
-                    "RISC-V does not lower an aggregate passed or returned through a function pointer"
-                        .to_string(),
-                ));
-            }
             let live_vregs = ctx
                 .live_across_calls
                 .get(&instruction_index)
@@ -1870,11 +1864,14 @@ fn emit_instruction_riscv<W: Write>(
             // t1 is a temporary the argument registers never overlap, so the target
             // survives the argument setup.
             load_operand_to_register(target, writer, reg_alloc, stack_slots, "t1")?;
+            // The instruction carries what a direct call reads from the callee's
+            // signature, so the arguments and the result travel the same way.
             let mut kinds: Vec<ArgKind> = arg_types
                 .iter()
-                .map(|ty| ArgKind {
+                .zip(arg_aggregates)
+                .map(|(ty, aggregate)| ArgKind {
                     ty: *ty,
-                    aggregate: None,
+                    aggregate: *aggregate,
                 })
                 .collect();
             if let Some(fixed) = variadic_fixed {
@@ -1882,13 +1879,31 @@ fn emit_instruction_riscv<W: Write>(
                     kind.ty = MirType::Scalar(ScalarType::I64);
                 }
             }
+            let result_slot = match ret {
+                Some(Register::Virtual(vreg)) => stack_slots.get(vreg).copied(),
+                _ => None,
+            };
+            let no_slot = || {
+                LaminaError::CodegenError(CodegenError::UnsupportedFeature(
+                    "RISC-V aggregate result has no frame slot".to_string(),
+                ))
+            };
+            let returned_in_memory = |aggregate: Aggregate| {
+                aggregate.size as u64 > Aggregate::max_in_registers(target_pointer(ctx.target))
+            };
+            let hidden = match ret_aggregate {
+                Some(aggregate) if returned_in_memory(*aggregate) => {
+                    Some(result_slot.ok_or_else(no_slot)?)
+                }
+                _ => None,
+            };
             let stack_space = pass_riscv_arguments(
                 writer,
                 reg_alloc,
                 stack_slots,
                 args,
                 &kinds,
-                None,
+                hidden,
                 ctx.target,
                 pointer_width,
             )?;
@@ -1898,16 +1913,48 @@ fn emit_instruction_riscv<W: Write>(
             }
             reload_caller_saved(writer, &caller_saved_mappings, stack_slots, ctx.target)?;
             if let Some(Register::Virtual(vreg)) = ret {
-                match ret_ty {
-                    Some(ty) if ty.is_float() => store_fp_register_to_register(
-                        "fa0",
-                        vreg,
-                        writer,
-                        reg_alloc,
-                        stack_slots,
-                        ty.size_bytes(pointer_width) == 4,
-                    )?,
-                    _ => store_register_to_register("a0", vreg, writer, reg_alloc, stack_slots)?,
+                match ret_aggregate {
+                    Some(aggregate) if returned_in_memory(*aggregate) => {}
+                    Some(aggregate) => {
+                        let slot = result_slot.ok_or_else(no_slot)?;
+                        match flat_result(*aggregate) {
+                            Some((first, second)) => {
+                                store_flat_members(writer, slot, first, second)?
+                            }
+                            None => {
+                                RiscVFrame::fp_store(
+                                    writer,
+                                    ctx.target.store_word(),
+                                    "a0",
+                                    slot,
+                                    "t0",
+                                )?;
+                                if aggregate.words_of(target_pointer(ctx.target)) > 1 {
+                                    let at = slot + ctx.target.word_bytes();
+                                    RiscVFrame::fp_store(
+                                        writer,
+                                        ctx.target.store_word(),
+                                        "a1",
+                                        at,
+                                        "t0",
+                                    )?;
+                                }
+                            }
+                        }
+                    }
+                    None => match ret_ty {
+                        Some(ty) if ty.is_float() => store_fp_register_to_register(
+                            "fa0",
+                            vreg,
+                            writer,
+                            reg_alloc,
+                            stack_slots,
+                            ty.size_bytes(pointer_width) == 4,
+                        )?,
+                        _ => {
+                            store_register_to_register("a0", vreg, writer, reg_alloc, stack_slots)?
+                        }
+                    },
                 }
             }
         }

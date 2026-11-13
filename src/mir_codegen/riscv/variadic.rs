@@ -141,16 +141,19 @@ pub(super) fn emit<W: Write>(
     area: Option<VaArea>,
     target: RiscVTarget,
 ) -> Result<(), LaminaError> {
-    let Some(area) = area else {
-        return Err(unsupported(
-            "variadic arguments are only available inside a variadic function",
-        ));
-    };
+    // Only `va_start` needs the argument area of the function it stands in. Walking a
+    // list someone else started is what every vprintf-shaped function does (C99
+    // 7.15.1.1), and that reads the list alone.
     let load = target.load_word();
     let store = target.store_word();
-    let word = area.word;
+    let word = area.map_or_else(|| target.word_bytes(), |area| area.word);
     match inst {
         MirInst::VaStart { ap } => {
+            let Some(area) = area else {
+                return Err(unsupported(
+                    "va_start needs the argument area of a variadic function, and this one is not variadic",
+                ));
+            };
             load_operand_to_register(ap, writer, reg_alloc, stack_slots, "t0")?;
             RiscVFrame::fp_address(writer, "t1", area.start)?;
             writeln!(writer, "    {store} t1, 0(t0)")?;
