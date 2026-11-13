@@ -126,9 +126,7 @@ RISCV64_UNSUPPORTED = {
     **CALLPTR_AGGREGATE_UNSUPPORTED,
 }
 
-AARCH64_UNSUPPORTED = {
-    'va_list_forwarded': 'the backend reads a va_list only inside a variadic function',
-}
+AARCH64_UNSUPPORTED: dict[str, str] = {}
 
 
 CROSS_TARGETS = {

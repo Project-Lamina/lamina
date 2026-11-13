@@ -152,6 +152,12 @@ fn spill_windows_save_area<W: Write>(w: &mut W, area: &WindowsArea) -> Result<()
     Ok(())
 }
 
+fn va_start_outside_variadic() -> LaminaError {
+    unsupported(
+        "va_start needs the argument area of a variadic function, and this one is not variadic",
+    )
+}
+
 fn unsupported(message: impl Into<String>) -> LaminaError {
     LaminaError::CodegenError(CodegenError::UnsupportedFeature(message.into()))
 }
@@ -182,22 +188,23 @@ pub(super) fn emit<W: Write>(
             "variadic argument `{inst}` is not yet supported by the AArch64 backend on {target_os:?}; it is implemented for Darwin, ELF and COFF targets"
         )));
     }
-    let Some(area) = area else {
-        return Err(unsupported(
-            "variadic arguments are only available inside a variadic function",
-        ));
-    };
+    // Only `va_start` needs the argument area of the function it stands in. Everything
+    // else walks the list it is handed, which is what a function given someone else's
+    // `va_list` does (C99 7.15.1.1), so those lower here whether this function is
+    // variadic or not. The shape of the list follows the target, not the caller.
     match area {
-        VaArea::Darwin { start } => emit_pointer_list(inst, w, frame, ra, start),
-        VaArea::Windows(area) => {
-            let Some(start) = area.start else {
+        Some(VaArea::Darwin { start }) => emit_pointer_list(inst, w, frame, ra, Some(start)),
+        Some(VaArea::Windows(area)) => {
+            if matches!(inst, MirInst::VaStart { .. }) && area.start.is_none() {
                 return Err(unsupported(format!(
                     "variadic argument `{inst}`: a Windows AArch64 variadic function whose named parameters reach the stack is not supported"
                 )));
-            };
-            emit_pointer_list(inst, w, frame, ra, start)
+            }
+            emit_pointer_list(inst, w, frame, ra, area.start)
         }
-        VaArea::Aapcs64(area) => emit_aapcs64(inst, w, frame, ra, &area, label_prefix),
+        Some(VaArea::Aapcs64(area)) => emit_aapcs64(inst, w, frame, ra, Some(&area), label_prefix),
+        None if os_uses_elf(target_os) => emit_aapcs64(inst, w, frame, ra, None, label_prefix),
+        None => emit_pointer_list(inst, w, frame, ra, None),
     }
 }
 
@@ -208,10 +215,11 @@ fn emit_pointer_list<W: Write>(
     w: &mut W,
     frame: &FrameMap,
     ra: &mut A64RegAlloc,
-    start: i32,
+    start: Option<i32>,
 ) -> Result<(), LaminaError> {
     match inst {
         MirInst::VaStart { ap } => {
+            let start = start.ok_or_else(va_start_outside_variadic)?;
             let list = ra.alloc_scratch().ok_or_else(scratch_error)?;
             let cursor = ra.alloc_scratch().ok_or_else(scratch_error)?;
             emit_materialize_operand(w, ap, list, frame, ra)?;
@@ -259,11 +267,12 @@ fn emit_aapcs64<W: Write>(
     w: &mut W,
     frame: &FrameMap,
     ra: &mut A64RegAlloc,
-    area: &Aapcs64Area,
+    area: Option<&Aapcs64Area>,
     label_prefix: &str,
 ) -> Result<(), LaminaError> {
     match inst {
         MirInst::VaStart { ap } => {
+            let area = area.ok_or_else(va_start_outside_variadic)?;
             let list = ra.alloc_scratch().ok_or_else(scratch_error)?;
             let cursor = ra.alloc_scratch().ok_or_else(scratch_error)?;
             emit_materialize_operand(w, ap, list, frame, ra)?;
