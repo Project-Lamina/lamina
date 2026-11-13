@@ -7,12 +7,13 @@ use crate::mir_codegen::common::{
 };
 use crate::mir_codegen::common::{emit_debug_file, emit_gnu_stack_note};
 use crate::mir_codegen::common::{
-    reject_thread_local_globals, reject_underaligned_accesses, unsupported_inline_asm,
-    unsupported_overflow_flag, unsupported_thread_local,
+    reject_thread_local_globals, reject_underaligned_accesses, unsupported_overflow_flag,
+    unsupported_thread_local,
 };
 use lamina_mir::SourceLoc;
 mod atomic;
 mod bit;
+mod inline_asm;
 mod simd;
 use crate::mir_codegen::simd::reserve_vector_slots;
 mod util;
@@ -2514,7 +2515,7 @@ fn emit_instruction_riscv<W: Write>(
             return Err(unsupported_overflow_flag("RISC-V"));
         }
         MirInst::InlineAsm { .. } => {
-            return Err(unsupported_inline_asm("RISC-V"));
+            inline_asm::emit(inst, writer, reg_alloc, stack_slots, ctx.target)?;
         }
         MirInst::VaStart { .. }
         | MirInst::VaArg { .. }
