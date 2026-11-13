@@ -113,11 +113,6 @@ S390X_UNSUPPORTED = {
 # output; variant files are never run as testcases of their own.
 RISCV64_UNSUPPORTED = {
     'checked_arithmetic': "the backend has no overflow flag for '<op>.ovf'",
-    'inline_asm_clobber': 'inline assembly is not implemented for RISC-V',
-    'inline_asm_loop': 'inline assembly is not implemented for RISC-V',
-    'inline_asm_pressure': 'inline assembly is not implemented for RISC-V',
-    'inline_asm_rdtsc': 'rdtsc reads the x86 timestamp counter; no RISC-V equivalent',
-    'inline_asm_unused': 'inline assembly is not implemented for RISC-V',
     'load_store_alignment': 'the backend issues no unaligned store',
     'thread_local_storage': 'thread-local storage is not implemented for RISC-V',
     'vector_operations': 'vectors need the V extension, which rv64imafd does not carry',
