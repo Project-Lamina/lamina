@@ -344,13 +344,14 @@ pub(super) fn compile_single_function_x86_64(
     writeln!(output, "{}:", self_tail_entry_label(target_os, func_name))
         .map_err(|e| CodegenError::InvalidCodegenOptions(e.to_string()))?;
 
-    if let Some(offset) = sret_slot {
+    if let Some(offset) = sret_slot.filter(|_| !naked) {
         let hidden = abi.arg_registers()[0];
         writeln!(output, "    movq %{hidden}, {offset}(%rbp)")
             .map_err(|e| CodegenError::InvalidCodegenOptions(e.to_string()))?;
     }
 
-    if !func.sig.params.is_empty() {
+    // A naked function's arguments stay in the registers the call put them in.
+    if !naked && !func.sig.params.is_empty() {
         let abi_for_func = X86ABI::new(target_os);
         let arg_regs = abi_for_func.arg_registers();
         let descs: Vec<ArgDesc> = func
@@ -669,12 +670,10 @@ fn ensure_naked_body(
             "@naked function '{func_name}' is supported on x86_64 Linux only"
         )));
     }
-    if !func.sig.params.is_empty()
-        || func.sig.variadic
-        || func.sig.ret_ty.is_some()
-        || func.sig.ret_aggregate.is_some()
-    {
-        return Err(refuse("takes parameters or returns a value"));
+    if func.sig.variadic || func.sig.ret_aggregate.is_some() {
+        return Err(refuse(
+            "is variadic or returns an aggregate, neither of which arrives without a prologue",
+        ));
     }
     let [block] = func.blocks.as_slice() else {
         return Err(refuse("must have exactly one block"));
@@ -1816,17 +1815,31 @@ mod naked_tests {
     }
 
     #[test]
-    fn naked_function_with_a_parameter_is_refused() {
-        let error = assembly_for(
-            "fn @f(i64 %a) -> void {\nentry:\n    asm.void \"cli\"\n    unreachable\n}\n",
+    fn naked_function_keeps_its_arguments_where_the_call_put_them() {
+        let asm = assembly_for(
+            "fn @f(i64 %a) -> i64 {\nentry:\n    asm.void \"movq %rdi, %rax\"\n    unreachable\n}\n",
             true,
             TargetOperatingSystem::Linux,
         )
-        .expect_err("naked with a parameter must be refused");
-        assert!(
-            error.contains("takes parameters or returns a value"),
-            "{error}"
-        );
+        .expect("a naked function may carry a signature");
+        let body: Vec<&str> = asm
+            .lines()
+            .skip_while(|line| !line.starts_with("f:"))
+            .skip(1)
+            .filter(|line| !line.trim_start().starts_with('.'))
+            .collect();
+        assert_eq!(body, vec!["    movq %rdi, %rax", "    ud2"], "{asm}");
+    }
+
+    #[test]
+    fn naked_variadic_function_is_refused() {
+        let error = assembly_for(
+            "fn @f(i64 %a, ...) -> void {\nentry:\n    asm.void \"cli\"\n    unreachable\n}\n",
+            true,
+            TargetOperatingSystem::Linux,
+        )
+        .expect_err("naked with a variadic signature must be refused");
+        assert!(error.contains("is variadic"), "{error}");
     }
 
     #[test]

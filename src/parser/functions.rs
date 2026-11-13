@@ -242,14 +242,12 @@ fn validate_naked_body(
     signature: &FunctionSignature<'_>,
     basic_blocks: &HashMap<Label<'_>, BasicBlock<'_>>,
 ) -> Result<(), LaminaError> {
-    if !signature.params.is_empty() || signature.variadic {
+    // A signature on a naked function is what its callers are compiled against:
+    // the arguments arrive in the registers the ABI names and the body reads them
+    // there, because nothing moves them anywhere else.
+    if signature.variadic {
         return Err(state.error(format!(
-            "@naked function '{name}' takes parameters\n  Hint: A naked function has no argument setup; read the registers in inline asm"
-        )));
-    }
-    if signature.return_type != Type::Void {
-        return Err(state.error(format!(
-            "@naked function '{name}' returns a value\n  Hint: A naked function returns void; the asm writes the result where it needs to go"
+            "@naked function '{name}' is variadic\n  Hint: A naked function has no argument setup, so there is no register save area to walk"
         )));
     }
     let [block] = basic_blocks.values().collect::<Vec<_>>()[..] else {
@@ -632,15 +630,15 @@ mod tests {
     }
 
     #[test]
-    fn naked_signature_must_take_no_parameters_and_return_void() {
-        let with_param = naked_error(
-            "@naked\nfn @f(i64 %a) -> void {\nentry:\n    asm.void \"cli\"\n    unreachable\n}\n",
+    fn naked_keeps_the_signature_its_callers_were_built_against() {
+        parse_module(
+            "@naked\nfn @f(i64 %a) -> i64 {\nentry:\n    asm.void \"movq %rdi, %rax\"\n    unreachable\n}\n",
+        )
+        .expect("a naked function may carry a signature");
+        let variadic = naked_error(
+            "@naked\nfn @f(i64 %a, ...) -> void {\nentry:\n    asm.void \"cli\"\n    unreachable\n}\n",
         );
-        assert!(with_param.contains("takes parameters"), "{with_param}");
-        let with_return = naked_error(
-            "@naked\nfn @f() -> i64 {\nentry:\n    asm.void \"cli\"\n    unreachable\n}\n",
-        );
-        assert!(with_return.contains("returns a value"), "{with_return}");
+        assert!(variadic.contains("is variadic"), "{variadic}");
     }
 
     #[test]
