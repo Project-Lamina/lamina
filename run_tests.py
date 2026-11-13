@@ -37,6 +37,16 @@ FLOAT_AGGREGATE_UNSUPPORTED = {
     )
 }
 
+# Every backend but x86_64 refuses these by name: a `callptr` carries no callee
+# signature, so an aggregate crossing one has no ABI classification to go by, and
+# a `va_list` handed to a function that is not itself variadic has no register
+# save area at that end.
+CALLPTR_AGGREGATE_UNSUPPORTED = {
+    'callptr_passes_aggregate': 'callptr carries no callee signature, so an aggregate cannot be classified across it',
+    'callptr_returns_aggregate': 'callptr carries no callee signature, so an aggregate cannot be classified across it',
+    'va_list_forwarded': 'the backend reads a va_list only inside a variadic function',
+}
+
 # A target with 32-bit integer registers refuses, by name, every testcase whose
 # shape needs a wider register than it has or a facility its backend does not
 # implement. These are backend gaps, not wrong answers: the compile fails rather
@@ -73,7 +83,9 @@ ILP32_UNSUPPORTED = {
     'checked_arithmetic': 'no backend reports the overflow of an i64 register pair as a whole',
     'thread_local_storage': 'thread-local storage is not implemented by this backend',
     'vector_operations': 'this backend has no vector unit',
+    'zero_size_aggregates': 'an aggregate crossing a boundary holds at least one byte here',
     **FLOAT_AGGREGATE_UNSUPPORTED,
+    **CALLPTR_AGGREGATE_UNSUPPORTED,
 }
 
 I686_UNSUPPORTED = {
@@ -92,6 +104,7 @@ ARMV7_UNSUPPORTED = {
 S390X_UNSUPPORTED = {
     'inline_asm_rdtsc': 'rdtsc reads the x86 timestamp counter; no s390x equivalent',
     'vector_operations': 'the z vector facility (z13 and later) is not implemented',
+    **CALLPTR_AGGREGATE_UNSUPPORTED,
 }
 
 
@@ -110,6 +123,11 @@ RISCV64_UNSUPPORTED = {
     'load_store_alignment': 'the backend issues no unaligned store',
     'thread_local_storage': 'thread-local storage is not implemented for RISC-V',
     'vector_operations': 'vectors need the V extension, which rv64imafd does not carry',
+    **CALLPTR_AGGREGATE_UNSUPPORTED,
+}
+
+AARCH64_UNSUPPORTED = {
+    **CALLPTR_AGGREGATE_UNSUPPORTED,
 }
 
 
@@ -126,7 +144,7 @@ CROSS_TARGETS = {
         'compiler': 'aarch64-linux-gnu-gcc',
         'emulator': 'qemu-aarch64-static',
         'sysroot': '/usr/aarch64-linux-gnu',
-        'unsupported': {},
+        'unsupported': AARCH64_UNSUPPORTED,
     },
     'riscv64_linux': {
         'byteorder': 'little',
