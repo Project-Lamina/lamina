@@ -597,11 +597,15 @@ fn build_weld_linker_args(
     if has_crt {
         args.extend(weld_crt_args(target, false));
     }
-    if let Some(interpreter) = target.interpreter() {
+    // A freestanding target has no C library to name and nothing to find at run
+    // time, so it gets neither the interpreter nor the library.
+    let hosted = target.environment.libc().is_some();
+    if hosted && let Some(interpreter) = target.interpreter() {
         args.push("--dynamic-linker".to_string());
         args.push(interpreter.to_string());
     }
     match target_os {
+        _ if !hosted => {}
         TargetOperatingSystem::Windows => {
             // weld detects PE from .exe output suffix; no entry-point arg needed.
         }
