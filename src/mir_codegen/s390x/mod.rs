@@ -255,14 +255,21 @@ fn outgoing_area(func: &Function, signatures: &Signatures) -> usize {
                     usize::from(signatures.hidden_result(name)),
                 ),
                 MirInst::CallIndirect {
-                    arg_types, args, ..
+                    arg_types,
+                    args,
+                    arg_aggregates,
+                    ret_aggregate,
+                    ..
                 } => {
-                    let types: Vec<MirType> = if arg_types.len() == args.len() {
-                        arg_types.clone()
+                    let kinds = if arg_types.len() == args.len() {
+                        indirect_kinds(arg_types, arg_aggregates)
                     } else {
-                        args.iter().map(promoted_argument_type).collect()
+                        args.iter()
+                            .map(|arg| ArgKind::scalar(promoted_argument_type(arg)))
+                            .collect()
                     };
-                    (types.into_iter().map(ArgKind::scalar).collect(), 0)
+                    let hidden = usize::from(ret_aggregate.is_some_and(returned_in_memory));
+                    (kinds, hidden)
                 }
                 _ => continue,
             };
@@ -270,6 +277,25 @@ fn outgoing_area(func: &Function, signatures: &Signatures) -> usize {
         }
     }
     widest
+}
+
+/// The argument classification an indirect call carries on the instruction, in the
+/// shape a direct call reads from the callee's signature.
+fn indirect_kinds(arg_types: &[MirType], arg_aggregates: &[Option<Aggregate>]) -> Vec<ArgKind> {
+    arg_types
+        .iter()
+        .zip(arg_aggregates)
+        .map(|(ty, aggregate)| ArgKind {
+            ty: *ty,
+            aggregate: *aggregate,
+        })
+        .collect()
+}
+
+/// Whether a result travels through a pointer the caller hands over rather than in
+/// the result register. The z/Architecture ABI keeps one doubleword by value.
+fn returned_in_memory(aggregate: Aggregate) -> bool {
+    aggregate.size > WORD as usize || aggregate.is_composite()
 }
 
 fn compile_function(
@@ -1048,18 +1074,34 @@ fn emit_instruction<W: Write>(
             ret_aggregate,
             arg_aggregates,
         } => {
-            if ret_aggregate.is_some() || arg_aggregates.iter().any(Option::is_some) {
-                return Err(unsupported(
-                    "s390x does not lower an aggregate passed or returned through a function pointer"
-                        .to_string(),
-                ));
-            }
-            let kinds: Vec<ArgKind> = arg_types.iter().copied().map(ArgKind::scalar).collect();
-            pass_arguments(writer, args, &kinds, slots, None)?;
+            // The instruction carries what a direct call reads from the callee's
+            // signature, so the arguments and the result travel the same way.
+            let kinds = indirect_kinds(arg_types, arg_aggregates);
+            let result_slot = match ret {
+                Some(Register::Virtual(vreg)) => slots.get(vreg).copied(),
+                _ => None,
+            };
+            let hidden = match ret_aggregate {
+                Some(aggregate) if returned_in_memory(*aggregate) => Some(
+                    result_slot
+                        .ok_or_else(|| unsupported("s390x aggregate result has no frame slot"))?,
+                ),
+                _ => None,
+            };
+            pass_arguments(writer, args, &kinds, slots, hidden)?;
             load_operand(target, writer, slots, T1)?;
             writeln!(writer, "    basr %r14, {T1}")?;
-            if let Some(ret) = ret {
-                store_call_result(writer, ret, ret_ty.filter(MirType::is_float), slots)?;
+            match (ret, ret_aggregate) {
+                (_, Some(aggregate)) if returned_in_memory(*aggregate) => {}
+                (Some(_), Some(_)) => {
+                    let offset = result_slot
+                        .ok_or_else(|| unsupported("s390x aggregate result has no frame slot"))?;
+                    abi::fp_store(writer, "stg", A0, offset, T0)?;
+                }
+                (Some(dst), None) => {
+                    store_call_result(writer, dst, ret_ty.filter(MirType::is_float), slots)?;
+                }
+                (None, _) => {}
             }
         }
         // The epilogue restores every callee-saved register, the frame pointer the

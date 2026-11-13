@@ -104,7 +104,6 @@ ARMV7_UNSUPPORTED = {
 S390X_UNSUPPORTED = {
     'inline_asm_rdtsc': 'rdtsc reads the x86 timestamp counter; no s390x equivalent',
     'vector_operations': 'the z vector facility (z13 and later) is not implemented',
-    **CALLPTR_AGGREGATE_UNSUPPORTED,
 }
 
 

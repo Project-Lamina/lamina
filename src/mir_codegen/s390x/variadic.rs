@@ -109,13 +109,16 @@ pub(super) fn emit<W: Write>(
     slots: &Slots,
     ctx: &mut EmitCtx<'_>,
 ) -> Result<(), LaminaError> {
-    let Some(area) = ctx.va else {
-        return Err(unsupported(
-            "s390x variadic arguments are only available inside a variadic function",
-        ));
-    };
+    // Only `va_start` needs the argument area of the function it stands in. Walking a
+    // list someone else started is what every vprintf-shaped function does (C99
+    // 7.15.1.1), and that reads the list alone.
     match inst {
         MirInst::VaStart { ap } => {
+            let Some(area) = ctx.va else {
+                return Err(unsupported(
+                    "s390x va_start needs the argument area of a variadic function, and this one is not variadic",
+                ));
+            };
             load_operand(ap, writer, slots, T1)?;
             writeln!(writer, "    lghi {A0}, {}", area.gpr)?;
             writeln!(writer, "    stg {A0}, {GPR_FIELD}({T1})")?;
