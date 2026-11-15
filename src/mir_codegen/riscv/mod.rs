@@ -7,13 +7,13 @@ use crate::mir_codegen::common::{
 };
 use crate::mir_codegen::common::{emit_debug_file, emit_gnu_stack_note};
 use crate::mir_codegen::common::{
-    reject_thread_local_globals, reject_underaligned_accesses, unsupported_overflow_flag,
-    unsupported_thread_local,
+    reject_thread_local_globals, reject_underaligned_accesses_wider_than, unsupported_thread_local,
 };
 use lamina_mir::SourceLoc;
 mod atomic;
 mod bit;
 mod inline_asm;
+mod overflow;
 mod simd;
 use crate::mir_codegen::simd::reserve_vector_slots;
 mod util;
@@ -33,8 +33,8 @@ use crate::{
     error::LaminaError,
     mir::{
         Aggregate, FlatField, FloatBinOp, FloatCmpOp, FloatUnOp, Function, Global,
-        Instruction as MirInst, IntBinOp, IntCmpOp, MirType, Module as MirModule, Operand,
-        Register, ScalarType, Signature, VirtualReg,
+        Instruction as MirInst, IntBinOp, IntCmpOp, MemoryAttrs, MirType, Module as MirModule,
+        Operand, Register, ScalarType, Signature, VirtualReg,
         instruction::{AddressMode, Immediate},
         register::RegisterClass,
     },
@@ -556,7 +556,15 @@ fn emit_riscv_module<W: Write>(
 ) -> Result<(), LaminaError> {
     reject_unsplit_wide_values(module, target)?;
     reject_thread_local_globals(module, "RISC-V")?;
-    reject_underaligned_accesses(module, target_arch(target).pointer_width(), "RISC-V")?;
+    // An integer no wider than a register is moved one byte at a time when the stated
+    // alignment says the address may fall anywhere. Anything wider, and every float,
+    // still needs an aligned address.
+    reject_underaligned_accesses_wider_than(
+        module,
+        target_arch(target).pointer_width(),
+        "RISC-V",
+        xlen_bits(target) / 8,
+    )?;
     let settings_arc = Arc::new(settings.clone());
     let signatures = Arc::new(AggregateSignatures::from_module(module));
     let results =
@@ -1033,6 +1041,63 @@ fn store_incoming_arguments<W: Write>(
 
 /// The pointer width the target's registers hold, which decides how many registers an
 /// aggregate spans and how large one may be before it travels by reference.
+const fn xlen_bits(target: RiscVTarget) -> usize {
+    match target.xlen {
+        Xlen::Rv32 => 32,
+        _ => 64,
+    }
+}
+
+/// How many bytes an access has to be taken one at a time, if it does. A stated
+/// alignment below the type's own means the address can fall anywhere, and a misaligned
+/// RISC-V access either traps or is emulated by the kernel, so the bytes are moved
+/// separately instead.
+fn byte_wise(ty: &MirType, attrs: &MemoryAttrs, target: RiscVTarget) -> Option<usize> {
+    if ty.is_float() || ty.is_vector() || !attrs.stated_align {
+        return None;
+    }
+    let pointer = target_pointer(target);
+    let bytes = ty.size_bytes(pointer);
+    (bytes > 1 && usize::from(attrs.align) < ty.alignment(pointer)).then_some(bytes)
+}
+
+/// Reads `bytes` bytes from `t0` into `a0`, least significant first, and gives the
+/// result the sign the whole-width load would have given it.
+fn load_bytes<W: Write>(
+    writer: &mut W,
+    bytes: usize,
+    offset: i16,
+    xlen: usize,
+) -> Result<(), LaminaError> {
+    writeln!(writer, "    lbu a0, {offset}(t0)")?;
+    for index in 1..bytes {
+        let at = offset + index as i16;
+        writeln!(writer, "    lbu t1, {at}(t0)")?;
+        writeln!(writer, "    slli t1, t1, {}", index * 8)?;
+        writeln!(writer, "    or a0, a0, t1")?;
+    }
+    let width = bytes * 8;
+    if width < xlen {
+        let shift = xlen - width;
+        writeln!(writer, "    slli a0, a0, {shift}")?;
+        writeln!(writer, "    srai a0, a0, {shift}")?;
+    }
+    Ok(())
+}
+
+/// Writes the low `bytes` bytes of `a0` to `t0`, least significant first.
+fn store_bytes<W: Write>(writer: &mut W, bytes: usize, offset: i16) -> Result<(), LaminaError> {
+    writeln!(writer, "    mv t1, a0")?;
+    for index in 0..bytes {
+        let at = offset + index as i16;
+        if index > 0 {
+            writeln!(writer, "    srli t1, t1, 8")?;
+        }
+        writeln!(writer, "    sb t1, {at}(t0)")?;
+    }
+    Ok(())
+}
+
 fn target_pointer(target: RiscVTarget) -> PointerWidth {
     match target.xlen {
         Xlen::Rv32 => PointerWidth::Bits32,
@@ -2033,8 +2098,26 @@ fn emit_instruction_riscv<W: Write>(
             dst,
             addr,
             ty,
-            attrs: _,
+            attrs,
         } => {
+            if let Some(bytes) = byte_wise(ty, attrs, ctx.target) {
+                let AddressMode::BaseOffset { base, offset, .. } = addr else {
+                    return Err(LaminaError::CodegenError(CodegenError::UnsupportedFeature(
+                        "RISC-V load supports only base+offset addressing".to_string(),
+                    )));
+                };
+                match base {
+                    Register::Virtual(v) => {
+                        load_register_to_register(v, writer, reg_alloc, stack_slots, "t0")?
+                    }
+                    Register::Physical(p) => writeln!(writer, "    mv t0, {}", p.name)?,
+                }
+                load_bytes(writer, bytes, *offset, xlen_bits(ctx.target))?;
+                if let Register::Virtual(vreg) = dst {
+                    store_register_to_register("a0", vreg, writer, reg_alloc, stack_slots)?;
+                }
+                return Ok(());
+            }
             let load_op = match ty {
                 MirType::Scalar(ScalarType::I1) | MirType::Scalar(ScalarType::I8) => "lb",
                 MirType::Scalar(ScalarType::I16) => "lh",
@@ -2103,8 +2186,24 @@ fn emit_instruction_riscv<W: Write>(
             addr,
             src,
             ty,
-            attrs: _,
+            attrs,
         } => {
+            if let Some(bytes) = byte_wise(ty, attrs, ctx.target) {
+                let AddressMode::BaseOffset { base, offset, .. } = addr else {
+                    return Err(LaminaError::CodegenError(CodegenError::UnsupportedFeature(
+                        "RISC-V store supports only base+offset addressing".to_string(),
+                    )));
+                };
+                load_operand_to_register(src, writer, reg_alloc, stack_slots, "a0")?;
+                match base {
+                    Register::Virtual(v) => {
+                        load_register_to_register(v, writer, reg_alloc, stack_slots, "t0")?
+                    }
+                    Register::Physical(p) => writeln!(writer, "    mv t0, {}", p.name)?,
+                }
+                store_bytes(writer, bytes, *offset)?;
+                return Ok(());
+            }
             let store_op = match ty {
                 MirType::Scalar(ScalarType::I1) | MirType::Scalar(ScalarType::I8) => "sb",
                 MirType::Scalar(ScalarType::I16) => "sh",
@@ -2511,9 +2610,25 @@ fn emit_instruction_riscv<W: Write>(
         MirInst::ThreadLocalAddr { .. } => {
             return Err(unsupported_thread_local("RISC-V"));
         }
-        MirInst::IntOverflow { .. } => {
-            return Err(unsupported_overflow_flag("RISC-V"));
-        }
+        MirInst::IntOverflow {
+            op,
+            ty,
+            signed,
+            dst,
+            lhs,
+            rhs,
+        } => overflow::emit(
+            writer,
+            reg_alloc,
+            stack_slots,
+            ctx.target,
+            op,
+            ty,
+            *signed,
+            dst,
+            lhs,
+            rhs,
+        )?,
         MirInst::InlineAsm { .. } => {
             inline_asm::emit(inst, writer, reg_alloc, stack_slots, ctx.target)?;
         }

@@ -219,6 +219,18 @@ pub fn reject_underaligned_accesses(
     pointer: PointerWidth,
     backend: &str,
 ) -> Result<(), LaminaError> {
+    reject_underaligned_accesses_wider_than(module, pointer, backend, 0)
+}
+
+/// The same, for a backend whose plain integer load and store reach an address of any
+/// alignment up to `unaligned_bytes` wide. Everything above that, and every access that
+/// is not a plain integer, still has to be refused.
+pub fn reject_underaligned_accesses_wider_than(
+    module: &MirModule,
+    pointer: PointerWidth,
+    backend: &str,
+    unaligned_bytes: usize,
+) -> Result<(), LaminaError> {
     for (name, function) in &module.functions {
         for block in &function.blocks {
             for instruction in &block.instructions {
@@ -228,7 +240,9 @@ pub fn reject_underaligned_accesses(
                     _ => continue,
                 };
                 let natural = ty.alignment(pointer);
-                if attrs.stated_align && usize::from(attrs.align) < natural {
+                let reachable =
+                    !ty.is_float() && !ty.is_vector() && ty.size_bytes(pointer) <= unaligned_bytes;
+                if attrs.stated_align && usize::from(attrs.align) < natural && !reachable {
                     return Err(LaminaError::CodegenError(CodegenError::UnsupportedFeature(
                         format!(
                             "{backend} cannot issue a {what} of {ty} at alignment {} (natural alignment is {natural}); its memory instructions fault on an unaligned address (function '{name}')",

@@ -17,7 +17,9 @@ mod overflow;
 mod tests;
 mod variadic;
 
-use crate::mir_codegen::common::{reject_thread_local_globals, reject_underaligned_accesses};
+use crate::mir_codegen::common::{
+    reject_thread_local_globals, reject_underaligned_accesses_wider_than,
+};
 use std::{collections::HashMap, io::Write, sync::Arc};
 
 use crate::{
@@ -431,7 +433,10 @@ pub fn generate_mir_armv7_with_units_and_settings<W: Write>(
     settings: &MirCodegenSettings,
 ) -> Result<(), LaminaError> {
     reject_thread_local_globals(module, "armv7")?;
-    reject_underaligned_accesses(module, PointerWidth::Bits32, "armv7")?;
+    // ARMv7-A loads and stores a byte, halfword or word at any address while the
+    // alignment check is off, which is how Linux runs. Anything wider goes through
+    // `ldrd` or a VFP instruction, which still fault.
+    reject_underaligned_accesses_wider_than(module, PointerWidth::Bits32, "armv7", 4)?;
     if !matches!(
         target_os,
         TargetOperatingSystem::Linux | TargetOperatingSystem::Unknown
