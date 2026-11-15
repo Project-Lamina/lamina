@@ -1242,6 +1242,18 @@ pub fn emit_static_global_data<W: Write>(
     })
 }
 
+/// The section of read-only data. A global holding symbol addresses goes to the section
+/// the loader may relocate: `.data.rel.ro` on ELF and `__DATA,__const` on Mach-O.
+fn read_only_data_section(target_os: TargetOperatingSystem, relocated: bool) -> &'static str {
+    match target_os {
+        os if os_uses_macho(os) && relocated => ".section __DATA,__const",
+        os if os_uses_macho(os) => ".section __TEXT,__const",
+        os if os_uses_coff(os) => ".section .rdata,\"dr\"",
+        _ if relocated => ".section .data.rel.ro,\"aw\"",
+        _ => ".section .rodata,\"a\"",
+    }
+}
+
 fn emit_global_storage<W: Write>(
     writer: &mut W,
     module: &MirModule,
@@ -1273,6 +1285,10 @@ fn emit_global_storage<W: Write>(
     for name in names {
         let global = &module.globals[name];
         let (data_section, bss_section) = match global.thread_local {
+            None if !global.mutable => (
+                read_only_data_section(target_os, !global.relocations.is_empty()),
+                bss_section,
+            ),
             None => (data_section, bss_section),
             Some(_) => (tls_data_section, tls_bss_section),
         };
@@ -1376,7 +1392,7 @@ fn write_global_storage<W: Write>(
         return write_relocated_global(writer, label, global, data_section, mangle);
     }
     match global.initializer.as_deref() {
-        Some(bytes) if bytes.iter().any(|&b| b != 0) => {
+        Some(bytes) if !global.mutable || bytes.iter().any(|&b| b != 0) => {
             writeln!(writer, "{data_section}")?;
             writeln!(writer, ".p2align {align_log2}")?;
             writeln!(writer, "{label}:")?;
@@ -3037,6 +3053,48 @@ entry:
             text.contains(".bss\n.p2align 3\nhidden:\n    .zero 8\n"),
             "{text}"
         );
+    }
+
+    fn emit_readonly_globals(os: TargetOperatingSystem) -> String {
+        let ir = parse_module(
+            "@readonly global $msg: [3 x i8] = \"hi\"\n\
+             @readonly global $zeros: [4 x i8] = [0, 0, 0, 0]\n\
+             @readonly global $table: ptr = @main\n\
+             fn @main() -> i64 {\nentry:\n ret.i64 0\n}\n",
+        )
+        .expect("parse read-only globals");
+        let mir = from_ir_x86_64(&ir, "readonly").expect("lower read-only globals");
+        let mut output = Vec::new();
+        generate_mir_x86_64::<Vec<u8>>(&mir, &mut output, os).expect("emit read-only globals");
+        String::from_utf8(output).expect("utf8 assembly")
+    }
+
+    fn section_before(text: &str, label: &str) -> String {
+        let at = text
+            .find(&format!("\n{label}:\n"))
+            .unwrap_or_else(|| panic!("no label {label} in {text}"));
+        text[..at]
+            .lines()
+            .rev()
+            .find(|line| line.starts_with(".section") || *line == ".data" || *line == ".bss")
+            .unwrap_or_else(|| panic!("no section before {label}"))
+            .to_string()
+    }
+
+    #[test]
+    fn readonly_globals_land_in_the_read_only_section_of_each_format() {
+        let elf = emit_readonly_globals(TargetOperatingSystem::Linux);
+        assert_eq!(section_before(&elf, "msg"), ".section .rodata,\"a\"");
+        assert_eq!(section_before(&elf, "zeros"), ".section .rodata,\"a\"");
+        assert_eq!(section_before(&elf, "table"), ".section .data.rel.ro,\"aw\"");
+
+        let macho = emit_readonly_globals(TargetOperatingSystem::MacOS);
+        assert_eq!(section_before(&macho, "_msg"), ".section __TEXT,__const");
+        assert_eq!(section_before(&macho, "_table"), ".section __DATA,__const");
+
+        let coff = emit_readonly_globals(TargetOperatingSystem::Windows);
+        assert_eq!(section_before(&coff, "msg"), ".section .rdata,\"dr\"");
+        assert_eq!(section_before(&coff, "zeros"), ".section .rdata,\"dr\"");
     }
 
     #[test]
