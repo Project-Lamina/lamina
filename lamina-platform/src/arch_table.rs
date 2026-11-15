@@ -92,6 +92,9 @@ pub enum FloatAggregateAbi {
     /// z/Architecture ELF: a record whose one member is a float travels as that float;
     /// every other aggregate takes a general register or travels by reference.
     S390x,
+    /// i386 System V: every aggregate travels in memory, whatever it holds. There is
+    /// no register class to classify it into, so a float field changes nothing.
+    I386,
 }
 
 /// The facts a target-independent lowering needs to turn IR into MIR.
@@ -553,7 +556,7 @@ arch_table! {
         stack_alignment_at_call: 16,
         stack_page_size: 4096,
         honors_argument_alignment: false,
-        float_aggregates: Refused,
+        float_aggregates: I386,
         output_artifact: Executable,
         hosted_environment: Gnu,
         environments: [Gnu, Musl],

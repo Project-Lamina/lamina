@@ -121,13 +121,28 @@ const MAX_HOMOGENEOUS_MEMBERS: usize = 4;
 
 /// The ABI of the integer that takes two registers, crossing a boundary: two words,
 /// aligned to its own size, one INTEGER aggregate, as System V classifies `__int128`.
-pub fn wide_aggregate(int64_regs: bool) -> Aggregate {
-    let size = if int64_regs { 16 } else { 8 };
+pub fn integer_aggregate(size: usize, align: usize) -> Aggregate {
     Aggregate {
         size,
-        align: size,
+        align,
         class: AggregateClass::Integer,
         shape: AggregateShape::WideScalar,
+    }
+}
+
+pub fn wide_aggregate(int64_regs: bool) -> Aggregate {
+    let size = if int64_regs { 16 } else { 8 };
+    integer_aggregate(size, size)
+}
+
+/// The aggregate a 128-bit integer crosses a function boundary as. A 32-bit target
+/// holds it in four registers and aligns it to a pair, which is what the C ABIs there
+/// give a 128-bit integer.
+pub fn quad_aggregate(int64_regs: bool) -> Aggregate {
+    if int64_regs {
+        wide_aggregate(int64_regs)
+    } else {
+        integer_aggregate(16, 8)
     }
 }
 
@@ -141,10 +156,7 @@ pub fn classify_aggregate(
     int64_regs: bool,
 ) -> Result<Option<Aggregate>, FromIRError> {
     if matches!(ty, IRType::Primitive(IRPrim::I128 | IRPrim::U128)) {
-        if !int64_regs {
-            return Err(FromIRError::UnsupportedType);
-        }
-        return Ok(Some(wide_aggregate(int64_regs)));
+        return Ok(Some(quad_aggregate(int64_regs)));
     }
     if !int64_regs && matches!(ty, IRType::Primitive(IRPrim::I64 | IRPrim::U64)) {
         return Ok(Some(wide_aggregate(int64_regs)));
@@ -179,6 +191,7 @@ pub fn classify_aggregate(
             FloatAggregateAbi::Win64 => AggregateClass::Integer,
             FloatAggregateAbi::Riscv64Lp64d => riscv_flat_class(ty, size, what, layout)?,
             FloatAggregateAbi::S390x => s390x_class(ty, size, layout)?,
+            FloatAggregateAbi::I386 => AggregateClass::Memory,
         }
     };
     Ok(Some(Aggregate {

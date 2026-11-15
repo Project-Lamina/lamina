@@ -14,17 +14,23 @@
 use super::*;
 use crate::ir::instruction::{AsmOperand as IRAsmOperand, UnaryOp};
 use crate::ir::types::Literal;
-use crate::mir::codegen::mapping::wide_aggregate;
+use crate::mir::codegen::mapping::integer_aggregate;
 use lamina_platform::{Endianness, TargetDataLayout};
 
-/// The integer that takes two registers on a target with this register width: `i128`
-/// where a register holds 64 bits, `i64` where it holds 32.
-pub(super) fn is_wide_prim(ty: IRPrim, int64_regs: bool) -> bool {
-    if int64_regs {
-        matches!(ty, IRPrim::I128 | IRPrim::U128)
-    } else {
-        matches!(ty, IRPrim::I64 | IRPrim::U64)
+/// How many registers an integer of this type takes. A 128-bit integer is two registers
+/// where a register holds 64 bits and four where it holds 32; a 64-bit integer is two
+/// only on the narrower target. Everything else fits one register and is not legalized
+/// here.
+pub(super) fn prim_words(ty: IRPrim, int64_regs: bool) -> Option<usize> {
+    match ty {
+        IRPrim::I128 | IRPrim::U128 => Some(if int64_regs { 2 } else { 4 }),
+        IRPrim::I64 | IRPrim::U64 if !int64_regs => Some(2),
+        _ => None,
     }
+}
+
+pub(super) fn is_wide_prim(ty: IRPrim, int64_regs: bool) -> bool {
+    prim_words(ty, int64_regs).is_some()
 }
 
 /// A value wider than a register is moved a word at a time, so the access the
@@ -43,18 +49,15 @@ fn reject_wide_alignment(
     }
 }
 
+pub(super) fn type_words(ty: &IRType<'_>, int64_regs: bool) -> Option<usize> {
+    match ty {
+        IRType::Primitive(prim) => prim_words(*prim, int64_regs),
+        _ => None,
+    }
+}
+
 pub(super) fn is_wide_type(ty: &IRType<'_>, int64_regs: bool) -> bool {
-    matches!(ty, IRType::Primitive(p) if is_wide_prim(*p, int64_regs))
-}
-
-/// A 128-bit integer needs four registers on a 32-bit target, which this lowering does
-/// not build, so it is refused by name rather than truncated.
-pub(super) fn is_quad_prim(ty: IRPrim, int64_regs: bool) -> bool {
-    !int64_regs && matches!(ty, IRPrim::I128 | IRPrim::U128)
-}
-
-pub(super) fn is_quad_type(ty: &IRType<'_>, int64_regs: bool) -> bool {
-    matches!(ty, IRType::Primitive(p) if is_quad_prim(*p, int64_regs))
+    type_words(ty, int64_regs).is_some()
 }
 
 pub(super) fn word_ty(int64_regs: bool) -> MirType {
@@ -73,14 +76,24 @@ const fn word_bytes(int64_regs: bool) -> i32 {
     if int64_regs { 8 } else { 4 }
 }
 
-/// Byte offsets of the low and high word of a pair held in memory. The high word comes
-/// first in big-endian order, so a pair written out is not two words at fixed places.
-const fn word_offsets(int64_regs: bool, endianness: Endianness) -> (i32, i32) {
+/// Byte offset of word `index` of a value held in memory. The most significant word
+/// comes first in big-endian order, so a word's place depends on how many there are.
+const fn word_offset(index: usize, count: usize, int64_regs: bool, endianness: Endianness) -> i32 {
     let width = word_bytes(int64_regs);
-    match endianness {
-        Endianness::Little => (0, width),
-        Endianness::Big => (width, 0),
-    }
+    let step = match endianness {
+        Endianness::Little => index,
+        Endianness::Big => count - 1 - index,
+    };
+    width * step as i32
+}
+
+/// The aggregate a legalized integer of `words` registers crosses a function boundary
+/// as. A 32-bit target aligns it to a register pair, which is what the C ABIs give a
+/// 64- or 128-bit integer there.
+pub(super) fn words_aggregate(words: usize, int64_regs: bool) -> Aggregate {
+    let size = words * word_bytes(int64_regs) as usize;
+    let align = if int64_regs { size } else { size.min(8) };
+    integer_aggregate(size, align)
 }
 
 fn word_imm(int64_regs: bool, value: i64) -> Operand {
@@ -91,15 +104,31 @@ fn word_imm(int64_regs: bool, value: i64) -> Operand {
     }
 }
 
+/// A legalized integer, least significant word first.
 #[derive(Clone)]
-pub(super) struct Words {
-    lo: Operand,
-    hi: Operand,
+pub(super) struct Words(Vec<Operand>);
+
+impl Words {
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    fn at(&self, index: usize) -> Operand {
+        self.0[index].clone()
+    }
+
+    fn lo(&self) -> Operand {
+        self.at(0)
+    }
+
+    fn top(&self) -> Operand {
+        self.at(self.0.len() - 1)
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum Abi {
-    Wide,
+    Wide(usize),
     Scalar(MirType),
 }
 
@@ -116,11 +145,11 @@ impl LibCall {
         for (index, param) in self.params.iter().enumerate() {
             let slot = u32::try_from(index).unwrap_or(u32::MAX);
             let parameter = match param {
-                Abi::Wide => Parameter::new(
+                Abi::Wide(words) => Parameter::new(
                     Register::Virtual(VirtualReg::gpr(slot)),
                     MirType::Scalar(ScalarType::Ptr),
                 )
-                .with_aggregate(wide_aggregate(int64_regs)),
+                .with_aggregate(words_aggregate(*words, int64_regs)),
                 Abi::Scalar(ty) => {
                     let class = if ty.is_float() {
                         RegisterClass::Fpr
@@ -134,10 +163,10 @@ impl LibCall {
         }
         match self.ret {
             None => {}
-            Some(Abi::Wide) => {
+            Some(Abi::Wide(words)) => {
                 sig = sig
                     .with_return(MirType::Scalar(ScalarType::Ptr))
-                    .with_return_aggregate(wide_aggregate(int64_regs));
+                    .with_return_aggregate(words_aggregate(words, int64_regs));
             }
             Some(Abi::Scalar(ty)) => sig = sig.with_return(ty),
         }
@@ -169,6 +198,10 @@ impl<'c, 'a> Cx<'c, 'a> {
 
     fn imm(&self, value: i64) -> Operand {
         word_imm(self.int64_regs, value)
+    }
+
+    fn zeros(&self, count: usize) -> Words {
+        Words(vec![self.imm(0); count])
     }
 
     fn temp(&mut self) -> Register {
@@ -235,20 +268,48 @@ impl<'c, 'a> Cx<'c, 'a> {
         self.bin(IntBinOp::LShr, joined, top)
     }
 
+    /// Word-by-word addition, carrying upward. The carry out of the top word is the
+    /// overflow of the value as a whole and is dropped.
     fn add(&mut self, a: Words, b: Words) -> Words {
-        let lo = self.bin(IntBinOp::Add, a.lo.clone(), b.lo.clone());
-        let carry = self.carry_out(a.lo, b.lo, lo.clone());
-        let hi_sum = self.bin(IntBinOp::Add, a.hi, b.hi);
-        let hi = self.bin(IntBinOp::Add, hi_sum, carry);
-        Words { lo, hi }
+        let count = a.len();
+        let mut carry: Option<Operand> = None;
+        let mut out = Vec::with_capacity(count);
+        for index in 0..count {
+            let x = a.at(index);
+            let y = b.at(index);
+            let sum = self.bin(IntBinOp::Add, x.clone(), y.clone());
+            let word = match carry.take() {
+                None => sum,
+                Some(carried) => self.bin(IntBinOp::Add, sum, carried),
+            };
+            if index + 1 < count {
+                carry = Some(self.carry_out(x, y, word.clone()));
+            }
+            out.push(word);
+        }
+        Words(out)
     }
 
+    /// Word-by-word subtraction, borrowing upward. `borrow_out` reads the borrow of a
+    /// word that already had the one below taken off it, which is the same expression.
     fn sub(&mut self, a: Words, b: Words) -> Words {
-        let lo = self.bin(IntBinOp::Sub, a.lo.clone(), b.lo.clone());
-        let borrow = self.borrow_out(a.lo, b.lo, lo.clone());
-        let hi_diff = self.bin(IntBinOp::Sub, a.hi, b.hi);
-        let hi = self.bin(IntBinOp::Sub, hi_diff, borrow);
-        Words { lo, hi }
+        let count = a.len();
+        let mut borrow: Option<Operand> = None;
+        let mut out = Vec::with_capacity(count);
+        for index in 0..count {
+            let x = a.at(index);
+            let y = b.at(index);
+            let diff = self.bin(IntBinOp::Sub, x.clone(), y.clone());
+            let word = match borrow.take() {
+                None => diff,
+                Some(borrowed) => self.bin(IntBinOp::Sub, diff, borrowed),
+            };
+            if index + 1 < count {
+                borrow = Some(self.borrow_out(x, y, word.clone()));
+            }
+            out.push(word);
+        }
+        Words(out)
     }
 
     fn mul_high_unsigned(&mut self, a: Operand, b: Operand) -> Operand {
@@ -273,33 +334,235 @@ impl<'c, 'a> Cx<'c, 'a> {
         self.bin(IntBinOp::Add, partial, w1_high)
     }
 
-    fn mul(&mut self, a: Words, b: Words) -> Words {
-        let lo = self.bin(IntBinOp::Mul, a.lo.clone(), b.lo.clone());
-        let high = self.mul_high_unsigned(a.lo.clone(), b.lo.clone());
-        let cross_b = self.bin(IntBinOp::Mul, a.lo, b.hi);
-        let cross_a = self.bin(IntBinOp::Mul, a.hi, b.lo);
-        let high_cross = self.bin(IntBinOp::Add, cross_a, cross_b);
-        let hi = self.bin(IntBinOp::Add, high, high_cross);
-        Words { lo, hi }
+    /// Adds `value` into word `index` of the accumulator, carrying into the words above
+    /// it. A word that nothing has reached yet takes the value as it stands.
+    fn accumulate(&mut self, acc: &mut [Option<Operand>], index: usize, value: Operand) {
+        let mut index = index;
+        let mut value = value;
+        while index < acc.len() {
+            let Some(held) = acc[index].take() else {
+                acc[index] = Some(value);
+                return;
+            };
+            let sum = self.bin(IntBinOp::Add, held.clone(), value.clone());
+            if index + 1 == acc.len() {
+                acc[index] = Some(sum);
+                return;
+            }
+            let carry = self.carry_out(held, value, sum.clone());
+            acc[index] = Some(sum);
+            value = carry;
+            index += 1;
+        }
     }
 
-    /// Splits the shift count into its masked low six bits, and a mask that is all ones
-    /// when the count is 64 or more.
-    fn shift_parts(&mut self, count: Operand) -> (Operand, Operand) {
-        let both = self.imm(2 * self.bits() - 1);
-        let count = self.bin(IntBinOp::And, count, both);
+    /// Schoolbook multiplication over the words, keeping the low half of the product.
+    /// The high word of a partial product lands one place up, and products that would
+    /// land past the top are never computed.
+    fn mul(&mut self, a: Words, b: Words) -> Words {
+        let count = a.len();
+        let mut acc: Vec<Option<Operand>> = vec![None; count];
+        for i in 0..count {
+            for j in 0..count - i {
+                let x = a.at(i);
+                let y = b.at(j);
+                let low = self.bin(IntBinOp::Mul, x.clone(), y.clone());
+                self.accumulate(&mut acc, i + j, low);
+                if i + j + 1 < count {
+                    let high = self.mul_high_unsigned(x, y);
+                    self.accumulate(&mut acc, i + j + 1, high);
+                }
+            }
+        }
+        let zero = self.imm(0);
+        Words(
+            acc.into_iter()
+                .map(|word| match word {
+                    Some(word) => word,
+                    None => zero.clone(),
+                })
+                .collect(),
+        )
+    }
+
+    fn bitwise(&mut self, op: IntBinOp, a: Words, b: Words) -> Words {
+        let mut out = Vec::with_capacity(a.len());
+        for index in 0..a.len() {
+            out.push(self.bin(op, a.at(index), b.at(index)));
+        }
+        Words(out)
+    }
+
+    fn complement(&mut self, a: Words) -> Words {
+        let mut out = Vec::with_capacity(a.len());
+        for index in 0..a.len() {
+            out.push(self.not(a.at(index)));
+        }
+        Words(out)
+    }
+
+    /// Reversing the bytes of the value reverses the words as well as the bytes in
+    /// each of them.
+    fn byteswap(&mut self, a: Words) -> Words {
+        let count = a.len();
+        let mut out = Vec::with_capacity(count);
+        for index in 0..count {
+            out.push(self.unary_word(IntUnOp::Bswap, a.at(count - 1 - index)));
+        }
+        Words(out)
+    }
+
+    /// The whole product, twice as many words as the operands. Nothing is dropped, so
+    /// the upper half says whether the product fits.
+    fn mul_full(&mut self, a: &Words, b: &Words) -> Words {
+        let count = a.len();
+        let mut acc: Vec<Option<Operand>> = vec![None; 2 * count];
+        for i in 0..count {
+            for j in 0..count {
+                let x = a.at(i);
+                let y = b.at(j);
+                let low = self.bin(IntBinOp::Mul, x.clone(), y.clone());
+                self.accumulate(&mut acc, i + j, low);
+                let high = self.mul_high_unsigned(x, y);
+                self.accumulate(&mut acc, i + j + 1, high);
+            }
+        }
+        let zero = self.imm(0);
+        Words(
+            acc.into_iter()
+                .map(|word| match word {
+                    Some(word) => word,
+                    None => zero.clone(),
+                })
+                .collect(),
+        )
+    }
+
+    /// The word's sign, as zero or one.
+    fn sign_of(&mut self, value: Operand) -> Operand {
+        let top = self.imm(self.bits() - 1);
+        self.bin(IntBinOp::LShr, value, top)
+    }
+
+    /// Whether the two differ, as zero or one, given each is already zero or one.
+    fn differs(&mut self, x: Operand, y: Operand) -> Operand {
+        self.bin(IntBinOp::Xor, x, y)
+    }
+
+    /// Whether the operation on the whole value leaves its width. An unsigned addition
+    /// overflows when the top word carries out; a signed one when both operands share
+    /// a sign the result does not.
+    fn overflow(&mut self, op: IROverflow, signed: bool, a: Words, b: Words) -> Operand {
+        let count = a.len();
+        match op {
+            IROverflow::Add => {
+                let sum = self.add(a.clone(), b.clone());
+                if !signed {
+                    return self.carry_out(a.top(), b.top(), sum.top());
+                }
+                let sa = self.sign_of(a.top());
+                let sb = self.sign_of(b.top());
+                let ss = self.sign_of(sum.top());
+                let apart = self.differs(sa.clone(), sb);
+                let one = self.imm(1);
+                let together = self.bin(IntBinOp::Xor, apart, one);
+                let moved = self.differs(ss, sa);
+                self.bin(IntBinOp::And, together, moved)
+            }
+            IROverflow::Sub => {
+                let diff = self.sub(a.clone(), b.clone());
+                if !signed {
+                    return self.borrow_out(a.top(), b.top(), diff.top());
+                }
+                let sa = self.sign_of(a.top());
+                let sb = self.sign_of(b.top());
+                let sd = self.sign_of(diff.top());
+                let apart = self.differs(sa.clone(), sb);
+                let moved = self.differs(sd, sa);
+                self.bin(IntBinOp::And, apart, moved)
+            }
+            IROverflow::Mul => {
+                let full = self.mul_full(&a, &b);
+                let low = Words((0..count).map(|index| full.at(index)).collect());
+                let mut high = Words((count..2 * count).map(|index| full.at(index)).collect());
+                if signed {
+                    // The words above hold the unsigned product. Each operand that is
+                    // negative contributes the other one shifted a whole half up, so
+                    // taking both off leaves the signed product's upper half.
+                    for (sign_of, other) in [(&a, &b), (&b, &a)] {
+                        let bit = self.sign_of(sign_of.top());
+                        let zero = self.imm(0);
+                        let mask = self.bin(IntBinOp::Sub, zero, bit);
+                        let masked = Words(
+                            (0..count)
+                                .map(|index| {
+                                    let word = other.at(index);
+                                    self.bin(IntBinOp::And, word, mask.clone())
+                                })
+                                .collect(),
+                        );
+                        high = self.sub(high, masked);
+                    }
+                    let top = self.imm(self.bits() - 1);
+                    let fill = self.bin(IntBinOp::AShr, low.top(), top);
+                    let mut differ: Option<Operand> = None;
+                    for index in 0..count {
+                        let word = high.at(index);
+                        let apart = self.bin(IntBinOp::Xor, word, fill.clone());
+                        differ = Some(match differ.take() {
+                            None => apart,
+                            Some(so_far) => self.bin(IntBinOp::Or, so_far, apart),
+                        });
+                    }
+                    let differ = match differ {
+                        Some(word) => word,
+                        None => self.imm(0),
+                    };
+                    return self.nonzero(differ);
+                }
+                let mut any = high.at(0);
+                for index in 1..count {
+                    any = self.bin(IntBinOp::Or, any, high.at(index));
+                }
+                self.nonzero(any)
+            }
+        }
+    }
+
+    /// Splits the shift count into the bits it moves within a word, and the number of
+    /// whole words it moves by, as one mask per bit of that number.
+    fn shift_parts(&mut self, count: Operand, words: usize) -> (Operand, Vec<Operand>) {
+        let width = self.imm(words as i64 * self.bits() - 1);
+        let count = self.bin(IntBinOp::And, count, width);
         let within = self.imm(self.bits() - 1);
         let small = self.bin(IntBinOp::And, count.clone(), within);
         let log2 = self.imm(self.bits().trailing_zeros().into());
         let big = self.bin(IntBinOp::LShr, count, log2);
-        let zero = self.imm(0);
-        let mask = self.bin(IntBinOp::Sub, zero, big);
-        (small, mask)
+        let mut masks = Vec::new();
+        let mut step = 0;
+        while 1usize << step < words {
+            let shifted = if step == 0 {
+                big.clone()
+            } else {
+                let by = self.imm(step as i64);
+                self.bin(IntBinOp::LShr, big.clone(), by)
+            };
+            let bit = if 1usize << (step + 1) >= words {
+                shifted
+            } else {
+                let one = self.imm(1);
+                self.bin(IntBinOp::And, shifted, one)
+            };
+            let zero = self.imm(0);
+            masks.push(self.bin(IntBinOp::Sub, zero, bit));
+            step += 1;
+        }
+        (small, masks)
     }
 
-    /// Bits of the low word that move up into the high word for a left shift below 64.
-    /// Written as two shifts, so a count of zero contributes nothing and no shift
-    /// reaches 64.
+    /// Bits of the word below that move up for a left shift within a word. Written as
+    /// two shifts, so a count of zero contributes nothing and no shift reaches the
+    /// register's width.
     fn cross_shift_left(&mut self, low: Operand, count: Operand) -> Operand {
         let one = self.imm(1);
         let halved = self.bin(IntBinOp::LShr, low, one);
@@ -308,8 +571,8 @@ impl<'c, 'a> Cx<'c, 'a> {
         self.bin(IntBinOp::LShr, halved, rest)
     }
 
-    /// Bits of the high word that move down into the low word for a right shift below
-    /// 64, with the same two-shift form.
+    /// Bits of the word above that move down for a right shift within a word, with the
+    /// same two-shift form.
     fn cross_shift_right(&mut self, high: Operand, count: Operand) -> Operand {
         let one = self.imm(1);
         let doubled = self.bin(IntBinOp::Shl, high, one);
@@ -325,41 +588,89 @@ impl<'c, 'a> Cx<'c, 'a> {
         self.bin(IntBinOp::Or, set, clear)
     }
 
-    fn shl(&mut self, a: Words, count: Operand) -> Words {
-        let (small, mask) = self.shift_parts(count);
+    /// One round of the word-granular part of a shift: every word takes the word that
+    /// is `step` places away when the mask is set, and keeps its own when it is clear.
+    /// Words shifted in from outside the value take `fill`, which is nothing for a
+    /// logical shift and the sign for an arithmetic one.
+    fn shift_words(
+        &mut self,
+        value: Vec<Operand>,
+        mask: Operand,
+        step: usize,
+        left: bool,
+        fill: Option<Operand>,
+    ) -> Vec<Operand> {
+        let count = value.len();
         let not_mask = self.not(mask.clone());
-        let low = self.bin(IntBinOp::Shl, a.lo.clone(), small.clone());
-        let high_shifted = self.bin(IntBinOp::Shl, a.hi.clone(), small.clone());
-        let crossed = self.cross_shift_left(a.lo, small);
-        let high_small = self.bin(IntBinOp::Or, high_shifted, crossed);
-        let lo = self.bin(IntBinOp::And, low.clone(), not_mask);
-        let hi = self.select_mask(mask, low, high_small);
-        Words { lo, hi }
+        let mut out = Vec::with_capacity(count);
+        for index in 0..count {
+            let source = if left {
+                index.checked_sub(step)
+            } else {
+                let from = index + step;
+                (from < count).then_some(from)
+            };
+            let incoming = match source {
+                Some(from) => Some(value[from].clone()),
+                None => fill.clone(),
+            };
+            let kept = value[index].clone();
+            out.push(match incoming {
+                None => self.bin(IntBinOp::And, kept, not_mask.clone()),
+                Some(incoming) => self.select_mask(mask.clone(), incoming, kept),
+            });
+        }
+        out
+    }
+
+    fn shl(&mut self, a: Words, count: Operand) -> Words {
+        let words = a.len();
+        let (small, masks) = self.shift_parts(count, words);
+        let mut value: Vec<Operand> = Vec::with_capacity(words);
+        for index in 0..words {
+            let shifted = self.bin(IntBinOp::Shl, a.at(index), small.clone());
+            value.push(match index {
+                0 => shifted,
+                _ => {
+                    let crossed = self.cross_shift_left(a.at(index - 1), small.clone());
+                    self.bin(IntBinOp::Or, shifted, crossed)
+                }
+            });
+        }
+        for (step, mask) in masks.into_iter().enumerate() {
+            value = self.shift_words(value, mask, 1 << step, true, None);
+        }
+        Words(value)
     }
 
     fn right_shift(&mut self, a: Words, count: Operand, arithmetic: bool) -> Words {
-        let (small, mask) = self.shift_parts(count);
-        let not_mask = self.not(mask.clone());
-        let shifted_low = self.bin(IntBinOp::LShr, a.lo.clone(), small.clone());
-        let crossed = self.cross_shift_right(a.hi.clone(), small.clone());
-        let low_small = self.bin(IntBinOp::Or, shifted_low, crossed);
+        let words = a.len();
+        let (small, masks) = self.shift_parts(count, words);
         let high_op = if arithmetic {
             IntBinOp::AShr
         } else {
             IntBinOp::LShr
         };
-        let high_shifted = self.bin(high_op, a.hi.clone(), small);
         let fill = if arithmetic {
             let top = self.imm(self.bits() - 1);
-            self.bin(IntBinOp::AShr, a.hi, top)
+            Some(self.bin(IntBinOp::AShr, a.top(), top))
         } else {
-            self.imm(0)
+            None
         };
-        let lo = self.select_mask(mask.clone(), high_shifted.clone(), low_small);
-        let hi_small = self.bin(IntBinOp::And, high_shifted, not_mask);
-        let hi_fill = self.bin(IntBinOp::And, fill, mask);
-        let hi = self.bin(IntBinOp::Or, hi_small, hi_fill);
-        Words { lo, hi }
+        let mut value: Vec<Operand> = Vec::with_capacity(words);
+        for index in 0..words {
+            if index + 1 == words {
+                value.push(self.bin(high_op, a.at(index), small.clone()));
+                continue;
+            }
+            let shifted = self.bin(IntBinOp::LShr, a.at(index), small.clone());
+            let crossed = self.cross_shift_right(a.at(index + 1), small.clone());
+            value.push(self.bin(IntBinOp::Or, shifted, crossed));
+        }
+        for (step, mask) in masks.into_iter().enumerate() {
+            value = self.shift_words(value, mask, 1 << step, false, fill.clone());
+        }
+        Words(value)
     }
 
     fn unary_word(&mut self, op: IntUnOp, src: Operand) -> Operand {
@@ -375,44 +686,68 @@ impl<'c, 'a> Cx<'c, 'a> {
     }
 
     fn popcount(&mut self, a: Words) -> Words {
-        let lo = self.unary_word(IntUnOp::Popcount, a.lo);
-        let hi = self.unary_word(IntUnOp::Popcount, a.hi);
-        Words {
-            lo: self.bin(IntBinOp::Add, lo, hi),
-            hi: self.imm(0),
+        let mut total = self.unary_word(IntUnOp::Popcount, a.at(0));
+        for index in 1..a.len() {
+            let next = self.unary_word(IntUnOp::Popcount, a.at(index));
+            total = self.bin(IntBinOp::Add, total, next);
         }
+        let mut out = self.zeros(a.len());
+        out.0[0] = total;
+        out
     }
 
-    /// The high word's count, or 64 plus the low word's when the high word is zero.
+    /// The count of the topmost word that is not zero, plus a whole word for each zero
+    /// word above it. A word's count only counts while every word above it was zero.
     fn leading_zeros(&mut self, a: Words) -> Words {
-        let high = self.unary_word(IntUnOp::Ctlz, a.hi.clone());
-        let low = self.unary_word(IntUnOp::Ctlz, a.lo.clone());
-        let mask = self.is_zero(a.hi);
-        let zero = self.imm(0);
-        let mask = self.bin(IntBinOp::Sub, zero, mask);
-        let low = self.bin(IntBinOp::And, low, mask);
-        Words {
-            lo: self.bin(IntBinOp::Add, high, low),
-            hi: self.imm(0),
+        let count = a.len();
+        let mut total = self.unary_word(IntUnOp::Ctlz, a.at(count - 1));
+        let mut empty: Option<Operand> = None;
+        for index in (0..count - 1).rev() {
+            let above = a.at(index + 1);
+            let is_zero = self.is_zero(above);
+            let so_far = match empty.take() {
+                None => is_zero,
+                Some(so_far) => self.bin(IntBinOp::And, so_far, is_zero),
+            };
+            empty = Some(so_far.clone());
+            let zero = self.imm(0);
+            let mask = self.bin(IntBinOp::Sub, zero, so_far);
+            let here = self.unary_word(IntUnOp::Ctlz, a.at(index));
+            let counted = self.bin(IntBinOp::And, here, mask);
+            total = self.bin(IntBinOp::Add, total, counted);
         }
+        let mut out = self.zeros(count);
+        out.0[0] = total;
+        out
     }
 
-    /// The low word's count, or 64 plus the high word's when the low word is zero.
+    /// The same from the other end: the lowest word's count, plus a whole word for each
+    /// zero word below the first that is not zero.
     fn trailing_zeros(&mut self, a: Words) -> Words {
-        let low = self.unary_word(IntUnOp::Cttz, a.lo.clone());
-        let high = self.unary_word(IntUnOp::Cttz, a.hi.clone());
-        let mask = self.is_zero(a.lo);
-        let zero = self.imm(0);
-        let mask = self.bin(IntBinOp::Sub, zero, mask);
-        let high = self.bin(IntBinOp::And, high, mask);
-        Words {
-            lo: self.bin(IntBinOp::Add, low, high),
-            hi: self.imm(0),
+        let count = a.len();
+        let mut total = self.unary_word(IntUnOp::Cttz, a.at(0));
+        let mut empty: Option<Operand> = None;
+        for index in 1..count {
+            let below = a.at(index - 1);
+            let is_zero = self.is_zero(below);
+            let so_far = match empty.take() {
+                None => is_zero,
+                Some(so_far) => self.bin(IntBinOp::And, so_far, is_zero),
+            };
+            empty = Some(so_far.clone());
+            let zero = self.imm(0);
+            let mask = self.bin(IntBinOp::Sub, zero, so_far);
+            let here = self.unary_word(IntUnOp::Cttz, a.at(index));
+            let counted = self.bin(IntBinOp::And, here, mask);
+            total = self.bin(IntBinOp::Add, total, counted);
         }
+        let mut out = self.zeros(count);
+        out.0[0] = total;
+        out
     }
 
-    /// Rotation by `count` modulo 128. The shifts mask their count, so the opposite
-    /// shift takes `-count`, and a zero count leaves the value unchanged.
+    /// Rotation by `count` modulo the value's width. The shifts mask their count, so
+    /// the opposite shift takes `-count`, and a zero count leaves the value unchanged.
     fn rotate(&mut self, a: Words, count: Operand, left: bool) -> Words {
         let zero = self.imm(0);
         let opposite = self.bin(IntBinOp::Sub, zero, count.clone());
@@ -423,26 +758,40 @@ impl<'c, 'a> Cx<'c, 'a> {
         };
         let up = self.shl(a.clone(), toward);
         let down = self.right_shift(a, away, false);
-        Words {
-            lo: self.bin(IntBinOp::Or, up.lo, down.lo),
-            hi: self.bin(IntBinOp::Or, up.hi, down.hi),
+        let mut out = Vec::with_capacity(up.len());
+        for index in 0..up.len() {
+            out.push(self.bin(IntBinOp::Or, up.at(index), down.at(index)));
         }
+        Words(out)
     }
 
     fn unsigned_less(&mut self, a: Words, b: Words) -> Operand {
-        let lo = self.bin(IntBinOp::Sub, a.lo.clone(), b.lo.clone());
-        let borrow = self.borrow_out(a.lo, b.lo, lo);
-        let hi_diff = self.bin(IntBinOp::Sub, a.hi.clone(), b.hi.clone());
-        let hi = self.bin(IntBinOp::Sub, hi_diff, borrow);
-        self.borrow_out(a.hi, b.hi, hi)
+        let count = a.len();
+        let mut borrow: Option<Operand> = None;
+        for index in 0..count {
+            let x = a.at(index);
+            let y = b.at(index);
+            let diff = self.bin(IntBinOp::Sub, x.clone(), y.clone());
+            let word = match borrow.take() {
+                None => diff,
+                Some(borrowed) => self.bin(IntBinOp::Sub, diff, borrowed),
+            };
+            borrow = Some(self.borrow_out(x, y, word));
+        }
+        match borrow {
+            Some(flag) => flag,
+            None => self.imm(0),
+        }
     }
 
     fn flip_sign(&mut self, a: Words) -> Words {
         let sign = self.imm(sign_bit(self.int64_regs));
-        Words {
-            lo: a.lo,
-            hi: self.bin(IntBinOp::Xor, a.hi, sign),
-        }
+        let count = a.len();
+        let mut out = a;
+        let top = out.at(count - 1);
+        let flipped = self.bin(IntBinOp::Xor, top, sign);
+        out.0[count - 1] = flipped;
+        out
     }
 
     /// The address `offset` bytes past `base`, as a register, so the access itself
@@ -461,7 +810,7 @@ impl<'c, 'a> Cx<'c, 'a> {
         self.store_words_at(base, words, self.word_align());
     }
 
-    /// The alignment each half of a wide value is moved at: a word, unless the address
+    /// The alignment each word of a wide value is moved at: a word, unless the address
     /// itself is known to fall short of one.
     fn word_align(&self) -> u8 {
         word_bytes(self.int64_regs) as u8
@@ -478,8 +827,10 @@ impl<'c, 'a> Cx<'c, 'a> {
             stated_align: false,
         };
         let ty = self.word();
-        let (lo_at, hi_at) = word_offsets(self.int64_regs, self.endianness);
-        for (src, offset) in [(words.lo, lo_at), (words.hi, hi_at)] {
+        let count = words.len();
+        for index in 0..count {
+            let offset = word_offset(index, count, self.int64_regs, self.endianness);
+            let src = words.at(index);
             let base = if offset == 0 {
                 base.clone()
             } else {
@@ -498,26 +849,27 @@ impl<'c, 'a> Cx<'c, 'a> {
         }
     }
 
-    fn load_words(&mut self, base: Register) -> Words {
-        self.load_words_at(base, self.word_align())
+    fn load_words(&mut self, base: Register, count: usize) -> Words {
+        self.load_words_at(base, count, self.word_align())
     }
 
-    fn load_words_at(&mut self, base: Register, align: u8) -> Words {
+    fn load_words_at(&mut self, base: Register, count: usize, align: u8) -> Words {
         let attrs = MemoryAttrs {
             align: align.min(self.word_align()),
             volatile: false,
             stated_align: false,
         };
         let ty = self.word();
-        let (lo_at, hi_at) = word_offsets(self.int64_regs, self.endianness);
-        let word = |cx: &mut Self, offset: i32| {
+        let mut out = Vec::with_capacity(count);
+        for index in 0..count {
+            let offset = word_offset(index, count, self.int64_regs, self.endianness);
             let base = if offset == 0 {
                 base.clone()
             } else {
-                cx.word_address(&base, offset)
+                self.word_address(&base, offset)
             };
-            let dst = cx.temp();
-            cx.out.push(Instruction::Load {
+            let dst = self.temp();
+            self.out.push(Instruction::Load {
                 ty,
                 dst: dst.clone(),
                 addr: AddressMode::BaseOffset {
@@ -527,24 +879,28 @@ impl<'c, 'a> Cx<'c, 'a> {
                 },
                 attrs,
             });
-            Operand::Register(dst)
-        };
-        let lo = word(self, lo_at);
-        let hi = word(self, hi_at);
-        Words { lo, hi }
+            out.push(Operand::Register(dst));
+        }
+        Words(out)
     }
 
     fn spill(&mut self, words: Words) -> Operand {
-        let address = self.pair_slot();
+        let address = self.words_slot(words.len());
         self.store_words(address.clone(), words);
         Operand::Register(address)
     }
 
-    /// Records that `address` holds a legalized pair a call passes where the callee's
-    /// declaration gives no type for it, so a backend can place it as the callee reads
-    /// it. A pair of this width in a variadic tail has no lowering on a target whose
-    /// registers already hold one word of it, so that stops the compile by name.
-    fn mark_variadic_wide(&mut self, address: &Operand, callee: &str) -> Result<(), FromIRError> {
+    /// Records that `address` holds a legalized integer a call passes where the
+    /// callee's declaration gives no type for it, so a backend can place it as the
+    /// callee reads it. A 128-bit integer in a variadic tail has no lowering on a
+    /// target whose registers already hold half of it, so that stops the compile by
+    /// name.
+    fn mark_variadic_wide(
+        &mut self,
+        address: &Operand,
+        words: usize,
+        callee: &str,
+    ) -> Result<(), FromIRError> {
         if self.int64_regs {
             return Err(FromIRError::NotLegalizable(format!(
                 "a 128-bit integer passed to '@{callee}' past its named parameters: no backend places one in a variadic tail"
@@ -555,7 +911,7 @@ impl<'c, 'a> Cx<'c, 'a> {
         };
         self.vars
             .variadic_wide
-            .insert(*vreg, wide_aggregate(self.int64_regs));
+            .insert(*vreg, words_aggregate(words, self.int64_regs));
         Ok(())
     }
 
@@ -577,9 +933,10 @@ impl<'c, 'a> Cx<'c, 'a> {
         name
     }
 
-    fn call_wide_result(&mut self, name: String, args: Vec<Operand>) -> Words {
+    fn call_wide_result(&mut self, name: String, args: Vec<Operand>, words: usize) -> Words {
         let slot = self.vregs.allocate_gpr();
-        self.reservations.insert(slot, 1);
+        self.reservations
+            .insert(slot, slot_reservation(words, self.int64_regs));
         self.out.push(Instruction::Call {
             name,
             args,
@@ -590,7 +947,7 @@ impl<'c, 'a> Cx<'c, 'a> {
             dst: address.clone(),
             slot,
         });
-        self.load_words(address)
+        self.load_words(address, words)
     }
 
     fn word_of(
@@ -615,19 +972,21 @@ impl<'c, 'a> Cx<'c, 'a> {
         Ok(Operand::Register(dst))
     }
 
-    /// The operand a non-pair instruction reads from this value: its low word when the
-    /// value is a pair, otherwise the value itself.
+    /// The operand a narrow instruction reads from this value: its low word when the
+    /// value is legalized, otherwise the value itself.
     fn narrow(&mut self, value: &IRVal<'a>) -> Result<Operand, FromIRError> {
-        if is_wide_value(value, self.vars, self.int64_regs) {
-            return Ok(self.operand_words(value)?.lo);
+        if let Some(words) = value_words(value, self.vars, self.int64_regs) {
+            return Ok(self.operand_words(value, words)?.lo());
         }
         resolve_operand(value, self.vregs, self.vars, self.globals)
     }
 
-    /// A stack slot two words deep, as a register holding its address.
-    fn pair_slot(&mut self) -> Register {
+    /// A stack slot deep enough for a legalized integer, as a register holding its
+    /// address.
+    fn words_slot(&mut self, words: usize) -> Register {
         let slot = self.vregs.allocate_gpr();
-        self.reservations.insert(slot, 1);
+        self.reservations
+            .insert(slot, slot_reservation(words, self.int64_regs));
         let address = self.temp();
         self.out.push(Instruction::StackAddr {
             dst: address.clone(),
@@ -636,77 +995,82 @@ impl<'c, 'a> Cx<'c, 'a> {
         address
     }
 
-    fn operand_words(&mut self, value: &IRVal<'a>) -> Result<Words, FromIRError> {
+    fn operand_words(&mut self, value: &IRVal<'a>, words: usize) -> Result<Words, FromIRError> {
         match value {
             IRVal::Constant(literal) => {
-                let (lo, hi) = literal_words(literal, self.int64_regs)?;
-                Ok(Words {
-                    lo: self.imm(lo),
-                    hi: self.imm(hi),
-                })
+                let parts = literal_words(literal, words, self.int64_regs)?;
+                Ok(Words(
+                    parts.into_iter().map(|word| self.imm(word)).collect(),
+                ))
             }
             IRVal::Variable(name) => {
                 let name: &'a str = name;
-                if let Some([lo, hi]) = self.vars.wide.get(name).cloned() {
-                    return Ok(Words {
-                        lo: Operand::Register(lo),
-                        hi: Operand::Register(hi),
-                    });
+                if let Some(held) = self.vars.wide.get(name).cloned() {
+                    if held.len() != words {
+                        return Err(FromIRError::UnsupportedType);
+                    }
+                    return Ok(Words(held.into_iter().map(Operand::Register).collect()));
                 }
                 if self.vars.contains_key(name) {
                     return Err(FromIRError::UnsupportedType);
                 }
-                let lo = Register::Virtual(self.vregs.allocate_gpr());
-                let hi = Register::Virtual(self.vregs.allocate_gpr());
-                self.vars.wide.insert(name, [lo.clone(), hi.clone()]);
-                Ok(Words {
-                    lo: Operand::Register(lo),
-                    hi: Operand::Register(hi),
-                })
+                let held: Vec<Register> = (0..words)
+                    .map(|_| Register::Virtual(self.vregs.allocate_gpr()))
+                    .collect();
+                self.vars.wide.insert(name, held.clone());
+                Ok(Words(held.into_iter().map(Operand::Register).collect()))
             }
             IRVal::Global(_) => Err(FromIRError::UnsupportedType),
         }
     }
 
-    fn result_pair(&mut self, name: &'a str) -> [Register; 2] {
-        if let Some(pair) = self.vars.wide.get(name).cloned() {
-            return pair;
+    fn result_words(&mut self, name: &'a str, words: usize) -> Vec<Register> {
+        if let Some(held) = self.vars.wide.get(name).cloned() {
+            return held;
         }
-        let pair = [self.temp(), self.temp()];
-        self.vars.wide.insert(name, pair.clone());
-        pair
+        let held: Vec<Register> = (0..words).map(|_| self.temp()).collect();
+        self.vars.wide.insert(name, held.clone());
+        held
     }
 
-    fn write_pair(&mut self, pair: [Register; 2], words: Words) {
+    fn write_words(&mut self, into: Vec<Register>, words: Words) {
         let ty = self.word();
-        self.out.push(Instruction::Copy {
-            ty,
-            dst: pair[0].clone(),
-            src: words.lo,
-        });
-        self.out.push(Instruction::Copy {
-            ty,
-            dst: pair[1].clone(),
-            src: words.hi,
-        });
+        for (index, dst) in into.into_iter().enumerate() {
+            let src = words.at(index);
+            self.out.push(Instruction::Copy { ty, dst, src });
+        }
     }
 
     fn division(&mut self, signed: bool, remainder: bool, a: Words, b: Words) -> Words {
-        let joined = self.bin(IntBinOp::Or, b.lo.clone(), b.hi.clone());
+        let count = a.len();
+        let mut joined = b.at(0);
+        for index in 1..count {
+            joined = self.bin(IntBinOp::Or, joined, b.at(index));
+        }
         let nonzero_divisor = self.nonzero(joined);
         let divisor = if signed {
             let sign = self.imm(sign_bit(self.int64_regs));
-            let sign_flipped = self.bin(IntBinOp::Xor, a.hi.clone(), sign);
-            let a_min_hi = self.is_zero(sign_flipped);
-            let a_min_lo = self.is_zero(a.lo.clone());
-            let ones = self.imm(-1);
-            let b_lo_neg = self.bin(IntBinOp::Xor, b.lo.clone(), ones.clone());
-            let b_lo_is = self.is_zero(b_lo_neg);
-            let b_hi_neg = self.bin(IntBinOp::Xor, b.hi.clone(), ones);
-            let b_hi_is = self.is_zero(b_hi_neg);
-            let left = self.bin(IntBinOp::And, a_min_hi, a_min_lo);
-            let right = self.bin(IntBinOp::And, b_lo_is, b_hi_is);
-            let overflow = self.bin(IntBinOp::And, left, right);
+            let sign_flipped = self.bin(IntBinOp::Xor, a.top(), sign);
+            let mut a_is_min = self.is_zero(sign_flipped);
+            for index in 0..count - 1 {
+                let low = self.is_zero(a.at(index));
+                a_is_min = self.bin(IntBinOp::And, a_is_min, low);
+            }
+            let mut b_is_ones: Option<Operand> = None;
+            for index in 0..count {
+                let ones = self.imm(-1);
+                let flipped = self.bin(IntBinOp::Xor, b.at(index), ones);
+                let is_ones = self.is_zero(flipped);
+                b_is_ones = Some(match b_is_ones.take() {
+                    None => is_ones,
+                    Some(so_far) => self.bin(IntBinOp::And, so_far, is_ones),
+                });
+            }
+            let b_is_ones = match b_is_ones {
+                Some(flag) => flag,
+                None => self.imm(0),
+            };
+            let overflow = self.bin(IntBinOp::And, a_is_min, b_is_ones);
             let one = self.imm(1);
             let fine = self.bin(IntBinOp::Xor, overflow, one);
             self.bin(IntBinOp::And, nonzero_divisor, fine)
@@ -729,7 +1093,8 @@ impl<'c, 'a> Cx<'c, 'a> {
             rhs: divisor,
         });
 
-        let symbol = match (self.int64_regs, signed, remainder) {
+        let quad = count as i64 * self.bits() == 128;
+        let symbol = match (quad, signed, remainder) {
             (true, true, false) => RuntimeSymbol::Divti3,
             (true, false, false) => RuntimeSymbol::Udivti3,
             (true, true, true) => RuntimeSymbol::Modti3,
@@ -739,10 +1104,35 @@ impl<'c, 'a> Cx<'c, 'a> {
             (false, true, true) => RuntimeSymbol::Moddi3,
             (false, false, true) => RuntimeSymbol::Umoddi3,
         };
-        let name = self.libcall_name(symbol, vec![Abi::Wide, Abi::Wide], Some(Abi::Wide));
+        let name = self.libcall_name(
+            symbol,
+            vec![Abi::Wide(count), Abi::Wide(count)],
+            Some(Abi::Wide(count)),
+        );
         let pa = self.spill(a);
         let pb = self.spill(b);
-        self.call_wide_result(name, vec![pa, pb])
+        self.call_wide_result(name, vec![pa, pb], count)
+    }
+}
+
+/// Stack slots are counted in eight-byte units past the first, so a legalized integer
+/// of any width this lowering builds asks for one more than it starts with.
+fn slot_reservation(words: usize, int64_regs: bool) -> usize {
+    let bytes = words * word_bytes(int64_regs) as usize;
+    bytes.div_ceil(8).max(2) - 1
+}
+
+/// Whether a value stands for a legalized integer, and of how many words. A literal is
+/// only self-evidently wide at 128 bits; at 64 bits on a 32-bit target the literal's
+/// own type says nothing, so the callee signature decides and a bare literal stays
+/// scalar here.
+fn value_words(value: &IRVal<'_>, vars: &VarBindings<'_>, int64_regs: bool) -> Option<usize> {
+    match value {
+        IRVal::Variable(name) => vars.wide.get(name).map(Vec::len),
+        IRVal::Constant(Literal::I128(_) | Literal::U128(_)) => {
+            Some(if int64_regs { 2 } else { 4 })
+        }
+        IRVal::Constant(_) | IRVal::Global(_) => None,
     }
 }
 
@@ -789,63 +1179,58 @@ fn fold(op: IntBinOp, a: i64, b: i64, int64_regs: bool) -> Option<i64> {
     })
 }
 
-fn literal_words(literal: &Literal<'_>, int64_regs: bool) -> Result<(i64, i64), FromIRError> {
-    if !int64_regs {
-        let value: i64 = match literal {
-            Literal::I8(v) => i64::from(*v),
-            Literal::I16(v) => i64::from(*v),
-            Literal::I32(v) => i64::from(*v),
-            Literal::I64(v) => *v,
-            Literal::U8(v) => i64::from(*v),
-            Literal::U16(v) => i64::from(*v),
-            Literal::U32(v) => i64::from(*v),
-            Literal::U64(v) => *v as i64,
-            Literal::Bool(v) => i64::from(*v),
-            Literal::I128(_)
-            | Literal::U128(_)
-            | Literal::F32(_)
-            | Literal::F64(_)
-            | Literal::String(_) => return Err(FromIRError::UnsupportedType),
-        };
-        let value = value as u64;
-        return Ok((
-            i64::from(value as u32 as i32),
-            i64::from((value >> 32) as u32 as i32),
-        ));
-    }
-    let wide: i128 = match literal {
-        Literal::I128(value) => return Ok(split(*value as u128)),
-        Literal::U128(value) => return Ok(split(*value)),
-        Literal::I8(v) => i128::from(*v),
-        Literal::I16(v) => i128::from(*v),
-        Literal::I32(v) => i128::from(*v),
-        Literal::I64(v) => i128::from(*v),
-        Literal::U8(v) => i128::from(*v),
-        Literal::U16(v) => i128::from(*v),
-        Literal::U32(v) => i128::from(*v),
-        Literal::U64(v) => i128::from(*v),
-        Literal::F32(_) | Literal::F64(_) | Literal::Bool(_) | Literal::String(_) => {
+/// The words a literal supplies to a legalized integer of `words` registers, least
+/// significant first.
+fn literal_words(
+    literal: &Literal<'_>,
+    words: usize,
+    int64_regs: bool,
+) -> Result<Vec<i64>, FromIRError> {
+    let value: i128 = match literal {
+        Literal::I128(value) => *value,
+        Literal::U128(value) => *value as i128,
+        Literal::I8(value) => i128::from(*value),
+        Literal::I16(value) => i128::from(*value),
+        Literal::I32(value) => i128::from(*value),
+        Literal::I64(value) => i128::from(*value),
+        Literal::U8(value) => i128::from(*value),
+        Literal::U16(value) => i128::from(*value),
+        Literal::U32(value) => i128::from(*value),
+        Literal::U64(value) => i128::from(*value),
+        Literal::Bool(value) => i128::from(*value),
+        Literal::F32(_) | Literal::F64(_) | Literal::String(_) => {
             return Err(FromIRError::UnsupportedType);
         }
     };
-    Ok(split(wide as u128))
+    Ok(split(value as u128, words, int64_regs))
 }
 
-fn split(value: u128) -> (i64, i64) {
-    (value as u64 as i64, (value >> 64) as u64 as i64)
+fn split(value: u128, words: usize, int64_regs: bool) -> Vec<i64> {
+    let bits = word_bits(int64_regs) as u32;
+    (0..words)
+        .map(|index| {
+            let moved = index as u32 * bits;
+            let shifted = if moved >= 128 { 0 } else { value >> moved };
+            if bits == 64 {
+                shifted as u64 as i64
+            } else {
+                i64::from(shifted as u32 as i32)
+            }
+        })
+        .collect()
 }
 
-/// Whether a value already stands for a pair. A literal is only self-evidently wide at
-/// 128 bits; at 64 bits on a 32-bit target the literal's own type says nothing, so the
-/// callee signature decides and a bare literal stays scalar here.
+/// The register count of a type the caller has already established is legalized.
+fn wide_width(ty: IRPrim, int64_regs: bool) -> Result<usize, FromIRError> {
+    prim_words(ty, int64_regs).ok_or(FromIRError::UnsupportedType)
+}
+
+fn wide_type_width(ty: &IRType<'_>, int64_regs: bool) -> Result<usize, FromIRError> {
+    type_words(ty, int64_regs).ok_or(FromIRError::UnsupportedType)
+}
+
 fn is_wide_value(value: &IRVal<'_>, vars: &VarBindings<'_>, int64_regs: bool) -> bool {
-    match value {
-        IRVal::Variable(name) => vars.wide.contains_key(name),
-        IRVal::Constant(literal) => {
-            int64_regs && matches!(literal, Literal::I128(_) | Literal::U128(_))
-        }
-        IRVal::Global(_) => false,
-    }
+    value_words(value, vars, int64_regs).is_some()
 }
 
 /// Whether the instruction names a 128-bit type, or reads a 128-bit value. Every variant
@@ -953,96 +1338,10 @@ fn touches_wide(
             .any(|name| vars.wide.contains_key(name))
 }
 
-/// Whether the instruction names a 128-bit type on a target whose registers are 32 bits
-/// wide. Four-word integers are not lowered, so the compile stops here by name.
-fn quad_mention(instr: &IRInst<'_>, module: &IRModule<'_>, int64_regs: bool) -> bool {
-    if int64_regs {
-        return false;
-    }
-    match instr {
-        IRInst::Binary { ty, .. }
-        | IRInst::Unary { ty, .. }
-        | IRInst::Cmp { ty, .. }
-        | IRInst::Switch { ty, .. }
-        | IRInst::VaArg { ty, .. } => is_quad_prim(*ty, int64_regs),
-        IRInst::ZeroExtend {
-            source_type,
-            target_type,
-            ..
-        }
-        | IRInst::SignExtend {
-            source_type,
-            target_type,
-            ..
-        }
-        | IRInst::Trunc {
-            source_type,
-            target_type,
-            ..
-        }
-        | IRInst::Bitcast {
-            source_type,
-            target_type,
-            ..
-        }
-        | IRInst::FloatConvert {
-            source_type,
-            target_type,
-            ..
-        }
-        | IRInst::IntToFloat {
-            source_type,
-            target_type,
-            ..
-        }
-        | IRInst::FloatToInt {
-            source_type,
-            target_type,
-            ..
-        } => is_quad_prim(*source_type, int64_regs) || is_quad_prim(*target_type, int64_regs),
-        IRInst::PtrToInt { target_type, .. } | IRInst::IntToPtr { target_type, .. } => {
-            is_quad_prim(*target_type, int64_regs)
-        }
-        IRInst::Select { ty, .. }
-        | IRInst::Ret { ty, .. }
-        | IRInst::Copy { ty, .. }
-        | IRInst::Load { ty, .. }
-        | IRInst::Store { ty, .. }
-        | IRInst::Alloc {
-            allocated_ty: ty, ..
-        } => is_quad_type(ty, int64_regs),
-        IRInst::Call { func_name, .. } => module.functions.get(func_name).is_some_and(|callee| {
-            is_quad_type(&callee.signature.return_type, int64_regs)
-                || callee
-                    .signature
-                    .params
-                    .iter()
-                    .any(|p| is_quad_type(&p.ty, int64_regs))
-        }),
-        IRInst::CallIndirect {
-            args, return_type, ..
-        } => {
-            is_quad_type(return_type, int64_regs)
-                || args.iter().any(|(ty, _)| is_quad_type(ty, int64_regs))
-        }
-        _ => false,
-    }
-}
-
 pub(super) fn lower_instruction<'a>(
     instr: &IRInst<'a>,
     cx: &mut Cx<'_, 'a>,
 ) -> Result<bool, FromIRError> {
-    if quad_mention(instr, cx.module, cx.int64_regs) {
-        let reason = if matches!(instr, IRInst::Alloc { .. }) {
-            "the slot itself is sixteen bytes, but no load or store of it can be legalized, because only register pairs are split"
-        } else {
-            "that takes four registers, and only pairs are split"
-        };
-        return Err(FromIRError::NotLegalizable(format!(
-            "`{instr}` names a 128-bit integer on a 32-bit target: {reason}"
-        )));
-    }
     if !touches_wide(instr, cx.vars, cx.module, cx.int64_regs) {
         return Ok(false);
     }
@@ -1054,34 +1353,38 @@ pub(super) fn lower_instruction<'a>(
             lhs,
             rhs,
         } if is_wide_prim(*ty, cx.int64_regs) => {
+            let words = wide_width(*ty, cx.int64_regs)?;
             let signed = matches!(*ty, IRPrim::I128 | IRPrim::I64);
-            let a = cx.operand_words(lhs)?;
-            let b = cx.operand_words(rhs)?;
+            let a = cx.operand_words(lhs, words)?;
+            let b = cx.operand_words(rhs, words)?;
             let value = match op {
                 IRBin::Add => cx.add(a, b),
                 IRBin::Sub => cx.sub(a, b),
                 IRBin::Mul => cx.mul(a, b),
-                IRBin::And => Words {
-                    lo: cx.bin(IntBinOp::And, a.lo, b.lo),
-                    hi: cx.bin(IntBinOp::And, a.hi, b.hi),
-                },
-                IRBin::Or => Words {
-                    lo: cx.bin(IntBinOp::Or, a.lo, b.lo),
-                    hi: cx.bin(IntBinOp::Or, a.hi, b.hi),
-                },
-                IRBin::Xor => Words {
-                    lo: cx.bin(IntBinOp::Xor, a.lo, b.lo),
-                    hi: cx.bin(IntBinOp::Xor, a.hi, b.hi),
-                },
-                IRBin::Shl => cx.shl(a, b.lo),
-                IRBin::Shr => cx.right_shift(a, b.lo, signed),
+                IRBin::And => cx.bitwise(IntBinOp::And, a, b),
+                IRBin::Or => cx.bitwise(IntBinOp::Or, a, b),
+                IRBin::Xor => cx.bitwise(IntBinOp::Xor, a, b),
+                IRBin::Shl => {
+                    let count = b.lo();
+                    cx.shl(a, count)
+                }
+                IRBin::Shr => {
+                    let count = b.lo();
+                    cx.right_shift(a, count, signed)
+                }
                 IRBin::Div => cx.division(signed, false, a, b),
                 IRBin::Rem => cx.division(signed, true, a, b),
-                IRBin::Rotl => cx.rotate(a, b.lo, true),
-                IRBin::Rotr => cx.rotate(a, b.lo, false),
+                IRBin::Rotl => {
+                    let count = b.lo();
+                    cx.rotate(a, count, true)
+                }
+                IRBin::Rotr => {
+                    let count = b.lo();
+                    cx.rotate(a, count, false)
+                }
             };
-            let pair = cx.result_pair(result);
-            cx.write_pair(pair, value);
+            let into = cx.result_words(result, words);
+            cx.write_words(into, value);
         }
         IRInst::Unary {
             op,
@@ -1089,30 +1392,22 @@ pub(super) fn lower_instruction<'a>(
             ty,
             value,
         } if is_wide_prim(*ty, cx.int64_regs) => {
-            let a = cx.operand_words(value)?;
+            let words = wide_width(*ty, cx.int64_regs)?;
+            let a = cx.operand_words(value, words)?;
             let value = match op {
                 UnaryOp::Neg => {
-                    let zero = Words {
-                        lo: cx.imm(0),
-                        hi: cx.imm(0),
-                    };
+                    let zero = cx.zeros(words);
                     cx.sub(zero, a)
                 }
-                UnaryOp::Not => Words {
-                    lo: cx.not(a.lo),
-                    hi: cx.not(a.hi),
-                },
+                UnaryOp::Not => cx.complement(a),
                 UnaryOp::Popcount => cx.popcount(a),
                 UnaryOp::Ctlz => cx.leading_zeros(a),
                 UnaryOp::Cttz => cx.trailing_zeros(a),
-                UnaryOp::Bswap => Words {
-                    lo: cx.unary_word(IntUnOp::Bswap, a.hi),
-                    hi: cx.unary_word(IntUnOp::Bswap, a.lo),
-                },
+                UnaryOp::Bswap => cx.byteswap(a),
                 UnaryOp::Sqrt => return Err(FromIRError::UnsupportedInstruction),
             };
-            let pair = cx.result_pair(result);
-            cx.write_pair(pair, value);
+            let into = cx.result_words(result, words);
+            cx.write_words(into, value);
         }
         IRInst::Cmp {
             op,
@@ -1121,15 +1416,18 @@ pub(super) fn lower_instruction<'a>(
             lhs,
             rhs,
         } if is_wide_prim(*ty, cx.int64_regs) => {
+            let words = wide_width(*ty, cx.int64_regs)?;
             let signed = matches!(*ty, IRPrim::I128 | IRPrim::I64);
-            let a = cx.operand_words(lhs)?;
-            let b = cx.operand_words(rhs)?;
+            let a = cx.operand_words(lhs, words)?;
+            let b = cx.operand_words(rhs, words)?;
             let dst = resolve_or_alloc(result, cx.vregs, cx.vars);
             let flag = match op {
                 IRCmp::Eq | IRCmp::Ne => {
-                    let lo = cx.bin(IntBinOp::Xor, a.lo, b.lo);
-                    let hi = cx.bin(IntBinOp::Xor, a.hi, b.hi);
-                    let differ = cx.bin(IntBinOp::Or, lo, hi);
+                    let parts = cx.bitwise(IntBinOp::Xor, a, b);
+                    let mut differ = parts.lo();
+                    for index in 1..words {
+                        differ = cx.bin(IntBinOp::Or, differ, parts.at(index));
+                    }
                     let op = if matches!(op, IRCmp::Eq) {
                         IntCmpOp::Eq
                     } else {
@@ -1184,30 +1482,36 @@ pub(super) fn lower_instruction<'a>(
             source_type,
             target_type,
             value,
-        } if is_wide_prim(*target_type, cx.int64_regs)
-            && !is_wide_prim(*source_type, cx.int64_regs) =>
-        {
-            extend_to_wide(cx, result, *source_type, value, false)?;
+        } if is_wide_prim(*target_type, cx.int64_regs) => {
+            let words = wide_width(*target_type, cx.int64_regs)?;
+            widen(cx, result, *source_type, value, false, words)?;
         }
         IRInst::SignExtend {
             result,
             source_type,
             target_type,
             value,
-        } if is_wide_prim(*target_type, cx.int64_regs)
-            && !is_wide_prim(*source_type, cx.int64_regs) =>
-        {
-            extend_to_wide(cx, result, *source_type, value, true)?;
+        } if is_wide_prim(*target_type, cx.int64_regs) => {
+            let words = wide_width(*target_type, cx.int64_regs)?;
+            widen(cx, result, *source_type, value, true, words)?;
         }
         IRInst::Trunc {
             result,
             source_type,
             target_type,
             value,
-        } if is_wide_prim(*source_type, cx.int64_regs)
-            && !is_wide_prim(*target_type, cx.int64_regs) =>
-        {
-            let a = cx.operand_words(value)?;
+        } if is_wide_prim(*source_type, cx.int64_regs) => {
+            let words = wide_width(*source_type, cx.int64_regs)?;
+            let a = cx.operand_words(value, words)?;
+            if let Some(kept) = prim_words(*target_type, cx.int64_regs) {
+                if kept >= words {
+                    return Err(FromIRError::UnsupportedInstruction);
+                }
+                let value = Words((0..kept).map(|index| a.at(index)).collect());
+                let into = cx.result_words(result, kept);
+                cx.write_words(into, value);
+                return Ok(true);
+            }
             let dst = resolve_or_alloc(result, cx.vregs, cx.vars);
             let word = cx.word();
             let to = map_ir_prim(*target_type, cx.layout)?;
@@ -1215,7 +1519,7 @@ pub(super) fn lower_instruction<'a>(
                 cx.out.push(Instruction::Copy {
                     ty: word,
                     dst,
-                    src: a.lo,
+                    src: a.lo(),
                 });
             } else {
                 cx.out.push(Instruction::IntConvert {
@@ -1223,17 +1527,20 @@ pub(super) fn lower_instruction<'a>(
                     to,
                     signed: false,
                     dst,
-                    src: a.lo,
+                    src: a.lo(),
                 });
             }
         }
         IRInst::Select {
             result,
+            ty,
             cond,
             true_val,
             false_val,
-            ..
         } => {
+            let Some(words) = type_words(ty, cx.int64_regs) else {
+                return Ok(false);
+            };
             let cond_reg = match cond {
                 IRVal::Variable(id) => cx
                     .vars
@@ -1244,24 +1551,19 @@ pub(super) fn lower_instruction<'a>(
                     return Err(FromIRError::UnsupportedInstruction);
                 }
             };
-            let t = cx.operand_words(true_val)?;
-            let f = cx.operand_words(false_val)?;
-            let pair = cx.result_pair(result);
+            let t = cx.operand_words(true_val, words)?;
+            let f = cx.operand_words(false_val, words)?;
+            let into = cx.result_words(result, words);
             let ty = cx.word();
-            cx.out.push(Instruction::Select {
-                ty,
-                dst: pair[0].clone(),
-                cond: cond_reg.clone(),
-                true_val: t.lo,
-                false_val: f.lo,
-            });
-            cx.out.push(Instruction::Select {
-                ty,
-                dst: pair[1].clone(),
-                cond: cond_reg,
-                true_val: t.hi,
-                false_val: f.hi,
-            });
+            for (index, dst) in into.into_iter().enumerate() {
+                cx.out.push(Instruction::Select {
+                    ty,
+                    dst,
+                    cond: cond_reg.clone(),
+                    true_val: t.at(index),
+                    false_val: f.at(index),
+                });
+            }
         }
         IRInst::Load {
             result,
@@ -1273,9 +1575,10 @@ pub(super) fn lower_instruction<'a>(
             reject_wide_alignment(*align, ty, "load")?;
             let at = cx.address_align(ptr);
             let base = address_base(ptr, cx)?;
-            let loaded = cx.load_words_at(base, at);
-            let pair = cx.result_pair(result);
-            cx.write_pair(pair, loaded);
+            let words = wide_type_width(ty, cx.int64_regs)?;
+            let loaded = cx.load_words_at(base, words, at);
+            let into = cx.result_words(result, words);
+            cx.write_words(into, loaded);
         }
         IRInst::Store {
             ty,
@@ -1287,19 +1590,22 @@ pub(super) fn lower_instruction<'a>(
             reject_wide_alignment(*align, ty, "store")?;
             let at = cx.address_align(ptr);
             let base = address_base(ptr, cx)?;
-            let words = cx.operand_words(value)?;
+            let count = wide_type_width(ty, cx.int64_regs)?;
+            let words = cx.operand_words(value, count)?;
             cx.store_words_at(base, words, at);
         }
         IRInst::Copy { result, ty, value } if is_wide_type(ty, cx.int64_regs) => {
-            let words = cx.operand_words(value)?;
-            let pair = cx.result_pair(result);
-            cx.write_pair(pair, words);
+            let count = wide_type_width(ty, cx.int64_regs)?;
+            let words = cx.operand_words(value, count)?;
+            let into = cx.result_words(result, count);
+            cx.write_words(into, words);
         }
         IRInst::Ret { ty, value } if is_wide_type(ty, cx.int64_regs) => {
             let Some(value) = value else {
                 return Err(FromIRError::InvalidIR);
             };
-            let words = cx.operand_words(value)?;
+            let count = wide_type_width(ty, cx.int64_regs)?;
+            let words = cx.operand_words(value, count)?;
             let address = cx.spill(words);
             cx.out.push(Instruction::Ret {
                 value: Some(address),
@@ -1319,19 +1625,23 @@ pub(super) fn lower_instruction<'a>(
                     .as_ref()
                     .is_some_and(|ty| is_wide_type(ty, cx.int64_regs));
                 if param_wide || stated_wide || is_wide_value(arg, cx.vars, cx.int64_regs) {
-                    let words = cx.operand_words(arg)?;
+                    let count = declared
+                        .and_then(|p| type_words(&p.ty, cx.int64_regs))
+                        .or_else(|| ty.as_ref().and_then(|ty| type_words(ty, cx.int64_regs)))
+                        .or_else(|| value_words(arg, cx.vars, cx.int64_regs))
+                        .ok_or(FromIRError::UnsupportedType)?;
+                    let words = cx.operand_words(arg, count)?;
                     let address = cx.spill(words);
                     if declared.is_none() {
-                        cx.mark_variadic_wide(&address, func_name)?;
+                        cx.mark_variadic_wide(&address, count, func_name)?;
                     }
                     mir_args.push(address);
                 } else {
                     mir_args.push(resolve_operand(arg, cx.vregs, cx.vars, cx.globals)?);
                 }
             }
-            let ret_wide =
-                callee.is_some_and(|f| is_wide_type(&f.signature.return_type, cx.int64_regs));
-            if ret_wide {
+            let returned = callee.and_then(|f| type_words(&f.signature.return_type, cx.int64_regs));
+            if let Some(returned) = returned {
                 let placeholder = cx.temp();
                 cx.out.push(Instruction::Call {
                     name: (*func_name).to_string(),
@@ -1339,9 +1649,9 @@ pub(super) fn lower_instruction<'a>(
                     ret: Some(placeholder.clone()),
                 });
                 if let Some(result) = result {
-                    let loaded = cx.load_words(placeholder);
-                    let pair = cx.result_pair(result);
-                    cx.write_pair(pair, loaded);
+                    let loaded = cx.load_words(placeholder, returned);
+                    let into = cx.result_words(result, returned);
+                    cx.write_words(into, loaded);
                 }
             } else {
                 if callee.is_none() {
@@ -1362,37 +1672,53 @@ pub(super) fn lower_instruction<'a>(
             variadic_fixed,
             return_type,
         } => {
-            // Past the fixed parameters the callee reads an unnamed slot, which the
-            // backends place from the aggregate `mark_variadic_wide` records. A named
-            // parameter and a result have no such channel on an indirect call, so
-            // those stay refused.
-            let refuse = || {
-                Err(FromIRError::UnsupportedAggregate(
-                    "a legalized integer pair as a named argument or the result of callptr: an indirect call carries no callee signature to pass an aggregate by, so call the function directly".to_string(),
-                ))
-            };
-            if is_wide_type(return_type, cx.int64_regs) {
-                return refuse();
-            }
-            let fixed = variadic_fixed.unwrap_or(args.len());
-            let mut mir_args = Vec::with_capacity(args.len());
-            let mut arg_types = Vec::with_capacity(args.len());
-            for (index, (arg_ty, value)) in args.iter().enumerate() {
-                let wide = is_wide_type(arg_ty, cx.int64_regs)
-                    || is_wide_value(value, cx.vars, cx.int64_regs);
-                if wide {
-                    if index < fixed {
-                        return refuse();
-                    }
-                    let words = cx.operand_words(value)?;
+            // An aggregate reaches the callee as the bytes it stands for, named by the
+            // classification the instruction carries. A legalized integer is spilled
+            // first and then travels the same way. Past the fixed parameters the callee
+            // reads an unnamed slot instead, which the backends place from what
+            // `mark_variadic_wide` records.
+            let passed: Vec<_> = args
+                .iter()
+                .filter(|(ty, _)| !zero_sized(ty, cx.module, cx.layout))
+                .collect();
+            let fixed = variadic_fixed.unwrap_or(passed.len());
+            let mut mir_args = Vec::with_capacity(passed.len());
+            let mut arg_types = Vec::with_capacity(passed.len());
+            let mut arg_aggregates: Vec<Option<Aggregate>> = Vec::with_capacity(passed.len());
+            for (index, (arg_ty, value)) in passed.into_iter().enumerate() {
+                let wide = type_words(arg_ty, cx.int64_regs)
+                    .or_else(|| value_words(value, cx.vars, cx.int64_regs));
+                if let Some(count) = wide {
+                    let words = cx.operand_words(value, count)?;
                     let address = cx.spill(words);
-                    cx.mark_variadic_wide(&address, "the called pointer")?;
+                    if index < fixed {
+                        arg_aggregates.push(Some(words_aggregate(count, cx.int64_regs)));
+                    } else {
+                        cx.mark_variadic_wide(&address, count, "the called pointer")?;
+                        arg_aggregates.push(None);
+                    }
                     arg_types.push(MirType::Scalar(ScalarType::Ptr));
                     mir_args.push(address);
                     continue;
                 }
-                let mut ty = map_ir_type(arg_ty, cx.layout)?;
+                let aggregate = match resolve_type_names(arg_ty, &cx.module.type_declarations)
+                    .filter(is_aggregate)
+                {
+                    Some(ty) => classify_aggregate(
+                        &ty,
+                        "argument of a call through a function pointer",
+                        cx.layout,
+                        cx.int64_regs,
+                    )?,
+                    None => None,
+                };
+                arg_aggregates.push(aggregate);
+                let mut ty = match aggregate {
+                    Some(_) => MirType::Scalar(ScalarType::Ptr),
+                    None => map_ir_type(arg_ty, cx.layout)?,
+                };
                 let mut operand = resolve_operand(value, cx.vregs, cx.vars, cx.globals)?;
+                normalize_lowered_literal(&mut operand, ty);
                 // C promotes a float in the variadic tail to a double, as the direct
                 // path does.
                 if index >= fixed && ty == MirType::Scalar(ScalarType::F32) {
@@ -1409,12 +1735,48 @@ pub(super) fn lower_instruction<'a>(
                 arg_types.push(ty);
                 mir_args.push(operand);
             }
+
+            let zero_return = zero_sized(return_type, cx.module, cx.layout);
+            let returned = type_words(return_type, cx.int64_regs).filter(|_| !zero_return);
+            let composite = (!zero_return && returned.is_none())
+                .then(|| resolve_type_names(return_type, &cx.module.type_declarations))
+                .flatten()
+                .filter(is_aggregate);
+            let ret_aggregate = match (returned, &composite) {
+                (Some(count), _) => Some(words_aggregate(count, cx.int64_regs)),
+                (None, Some(ty)) => classify_aggregate(
+                    ty,
+                    "return of a call through a function pointer",
+                    cx.layout,
+                    cx.int64_regs,
+                )?,
+                (None, None) => None,
+            };
             let ret_ty = match return_type {
                 IRType::Void => None,
+                _ if zero_return || ret_aggregate.is_some() => None,
                 other => Some(map_ir_type(other, cx.layout)?),
             };
             let target = resolve_operand(target, cx.vregs, cx.vars, cx.globals)?;
-            let ret = result.map(|name| resolve_or_alloc(name, cx.vregs, cx.vars));
+
+            let mut after = None;
+            let ret = match (ret_aggregate, result) {
+                (Some(aggregate), _) => {
+                    let slot = cx.vregs.allocate_gpr();
+                    let words = aggregate.words();
+                    if words > 1 {
+                        cx.reservations.insert(slot, words - 1);
+                    }
+                    if let Some(name) = result {
+                        after = Some((slot, returned, name));
+                    }
+                    Some(Register::Virtual(slot))
+                }
+                (None, Some(name)) if !zero_return => {
+                    Some(resolve_or_alloc(name, cx.vregs, cx.vars))
+                }
+                (None, _) => None,
+            };
             cx.out.push(Instruction::CallIndirect {
                 target,
                 arg_types,
@@ -1422,9 +1784,27 @@ pub(super) fn lower_instruction<'a>(
                 variadic_fixed: *variadic_fixed,
                 ret,
                 ret_ty,
-                ret_aggregate: None,
-                arg_aggregates: Vec::new(),
+                ret_aggregate,
+                arg_aggregates,
             });
+            if let Some((slot, returned, name)) = after {
+                match returned {
+                    Some(count) => {
+                        let address = cx.temp();
+                        cx.out.push(Instruction::StackAddr {
+                            dst: address.clone(),
+                            slot,
+                        });
+                        let words = cx.load_words(address, count);
+                        let into = cx.result_words(name, count);
+                        cx.write_words(into, words);
+                    }
+                    None => {
+                        let dst = resolve_or_alloc(name, cx.vregs, cx.vars);
+                        cx.out.push(Instruction::StackAddr { dst, slot });
+                    }
+                }
+            }
         }
         IRInst::IntToFloat {
             result,
@@ -1433,9 +1813,10 @@ pub(super) fn lower_instruction<'a>(
             target_type,
             value,
         } if is_wide_prim(*source_type, cx.int64_regs) => {
-            let words = cx.operand_words(value)?;
+            let count = wide_width(*source_type, cx.int64_regs)?;
+            let words = cx.operand_words(value, count)?;
             let arg = cx.spill(words);
-            let wide = cx.int64_regs;
+            let wide = count as i64 * cx.bits() == 128;
             let (symbol, ret_ty) = match target_type {
                 IRPrim::F64 if *signed && wide => {
                     (RuntimeSymbol::Floattidf, MirType::Scalar(ScalarType::F64))
@@ -1475,7 +1856,7 @@ pub(super) fn lower_instruction<'a>(
                     ));
                 }
             };
-            let name = cx.libcall_name(symbol, vec![Abi::Wide], Some(Abi::Scalar(ret_ty)));
+            let name = cx.libcall_name(symbol, vec![Abi::Wide(count)], Some(Abi::Scalar(ret_ty)));
             let dst = resolve_or_alloc(result, cx.vregs, cx.vars);
             cx.out.push(Instruction::Call {
                 name,
@@ -1490,7 +1871,8 @@ pub(super) fn lower_instruction<'a>(
             target_type,
             value,
         } if is_wide_prim(*target_type, cx.int64_regs) => {
-            let wide = cx.int64_regs;
+            let count = wide_width(*target_type, cx.int64_regs)?;
+            let wide = count as i64 * cx.bits() == 128;
             let (symbol, param_ty) = match source_type {
                 IRPrim::F64 if *signed && wide => {
                     (RuntimeSymbol::Fixdfti, MirType::Scalar(ScalarType::F64))
@@ -1531,10 +1913,10 @@ pub(super) fn lower_instruction<'a>(
                 }
             };
             let arg = resolve_operand(value, cx.vregs, cx.vars, cx.globals)?;
-            let name = cx.libcall_name(symbol, vec![Abi::Scalar(param_ty)], Some(Abi::Wide));
-            let words = cx.call_wide_result(name, vec![arg]);
-            let pair = cx.result_pair(result);
-            cx.write_pair(pair, words);
+            let name = cx.libcall_name(symbol, vec![Abi::Scalar(param_ty)], Some(Abi::Wide(count)));
+            let words = cx.call_wide_result(name, vec![arg], count);
+            let into = cx.result_words(result, count);
+            cx.write_words(into, words);
         }
         IRInst::Write {
             buffer,
@@ -1567,27 +1949,32 @@ pub(super) fn lower_instruction<'a>(
             target_type,
             value,
         } => {
-            let from_pair = is_wide_prim(*source_type, cx.int64_regs);
-            let to_pair = is_wide_prim(*target_type, cx.int64_regs);
+            let from_pair = prim_words(*source_type, cx.int64_regs);
+            let to_pair = prim_words(*target_type, cx.int64_regs);
             match (from_pair, to_pair) {
-                (true, true) => {
-                    let words = cx.operand_words(value)?;
-                    let pair = cx.result_pair(result);
-                    cx.write_pair(pair, words);
+                (Some(from), Some(to)) => {
+                    if from != to {
+                        return Err(FromIRError::UnsupportedInstruction);
+                    }
+                    let words = cx.operand_words(value, from)?;
+                    let into = cx.result_words(result, from);
+                    cx.write_words(into, words);
                 }
-                (false, true) => {
+                (None, Some(count)) => {
+                    let held =
+                        map_ir_prim(*source_type, cx.layout)?.size_bytes(cx.layout.pointer_width);
+                    if held != count * word_bytes(cx.int64_regs) as usize {
+                        return Err(FromIRError::UnsupportedInstruction);
+                    }
                     if let IRVal::Constant(literal) = value {
-                        let (lo, hi) = float_literal_words(literal, cx.int64_regs)?;
-                        let words = Words {
-                            lo: cx.imm(lo),
-                            hi: cx.imm(hi),
-                        };
-                        let pair = cx.result_pair(result);
-                        cx.write_pair(pair, words);
+                        let parts = float_literal_words(literal, count, cx.int64_regs)?;
+                        let words = Words(parts.into_iter().map(|word| cx.imm(word)).collect());
+                        let into = cx.result_words(result, count);
+                        cx.write_words(into, words);
                     } else {
                         let src = resolve_operand(value, cx.vregs, cx.vars, cx.globals)?;
                         let ty = map_ir_prim(*source_type, cx.layout)?;
-                        let address = cx.pair_slot();
+                        let address = cx.words_slot(count);
                         cx.out.push(Instruction::Store {
                             ty,
                             src,
@@ -1602,14 +1989,14 @@ pub(super) fn lower_instruction<'a>(
                                 stated_align: false,
                             },
                         });
-                        let words = cx.load_words(address);
-                        let pair = cx.result_pair(result);
-                        cx.write_pair(pair, words);
+                        let words = cx.load_words(address, count);
+                        let into = cx.result_words(result, count);
+                        cx.write_words(into, words);
                     }
                 }
-                (true, false) => {
-                    let words = cx.operand_words(value)?;
-                    let address = cx.pair_slot();
+                (Some(count), None) => {
+                    let words = cx.operand_words(value, count)?;
+                    let address = cx.words_slot(count);
                     cx.store_words(address.clone(), words);
                     let ty = map_ir_prim(*target_type, cx.layout)?;
                     let dst = resolve_or_alloc(result, cx.vregs, cx.vars);
@@ -1628,7 +2015,7 @@ pub(super) fn lower_instruction<'a>(
                         },
                     });
                 }
-                (false, false) => return Err(FromIRError::UnsupportedInstruction),
+                (None, None) => return Err(FromIRError::UnsupportedInstruction),
             }
         }
         IRInst::PtrToInt {
@@ -1646,12 +2033,11 @@ pub(super) fn lower_instruction<'a>(
                 dst: lo.clone(),
                 src,
             });
-            let pair = cx.result_pair(result);
-            let words = Words {
-                lo: Operand::Register(lo),
-                hi: cx.imm(0),
-            };
-            cx.write_pair(pair, words);
+            let count = wide_width(*target_type, cx.int64_regs)?;
+            let into = cx.result_words(result, count);
+            let mut words = cx.zeros(count);
+            words.0[0] = Operand::Register(lo);
+            cx.write_words(into, words);
         }
         IRInst::IntToPtr {
             result,
@@ -1728,23 +2114,43 @@ pub(super) fn lower_instruction<'a>(
         | IRInst::VaEnd { .. }
         | IRInst::VaCopy { .. }
         | IRInst::InlineAsm { .. } => return Err(FromIRError::UnsupportedInstruction),
-        IRInst::OverflowFlag { op, ty, .. } => {
-            return Err(FromIRError::NotLegalizable(format!(
-                "{op}.ovf.{ty} on a 32-bit target: the value is held in a register pair and no backend reports the overflow of the pair as a whole"
-            )));
+        IRInst::OverflowFlag {
+            op,
+            result,
+            ty,
+            lhs,
+            rhs,
+        } => {
+            let words = wide_width(*ty, cx.int64_regs)?;
+            let signed = !matches!(ty, IRPrim::U8 | IRPrim::U16 | IRPrim::U32 | IRPrim::U64);
+            let a = cx.operand_words(lhs, words)?;
+            let b = cx.operand_words(rhs, words)?;
+            let flag = cx.overflow(*op, signed, a, b);
+            let dst = resolve_or_alloc(result, cx.vregs, cx.vars);
+            let ty = cx.word();
+            let zero = cx.imm(0);
+            cx.out.push(Instruction::IntCmp {
+                op: IntCmpOp::Ne,
+                ty,
+                dst,
+                lhs: flag,
+                rhs: zero,
+            });
         }
         IRInst::VaArg { result, ty, ap } if is_wide_prim(*ty, cx.int64_regs) => {
             if cx.int64_regs {
                 return Err(FromIRError::NotLegalizable(format!(
-                    "va_arg.{ty}: a 128-bit variadic argument takes four registers, and only pairs are split"
+                    "va_arg.{ty}: no backend reads a 128-bit variadic argument, which the ABIs place as a pair of registers rather than one"
                 )));
             }
+            let count = wide_width(*ty, cx.int64_regs)?;
             let ap = resolve_operand(ap, cx.vregs, cx.vars, cx.globals)?;
             let slot = cx.vregs.allocate_gpr();
-            cx.reservations.insert(slot, 1);
+            cx.reservations
+                .insert(slot, slot_reservation(count, cx.int64_regs));
             cx.vars
                 .variadic_wide_results
-                .insert(slot, wide_aggregate(cx.int64_regs));
+                .insert(slot, words_aggregate(count, cx.int64_regs));
             cx.out.push(Instruction::VaArg {
                 ty: map_ir_prim(*ty, cx.layout)?,
                 dst: Register::Virtual(slot),
@@ -1755,9 +2161,9 @@ pub(super) fn lower_instruction<'a>(
                 dst: address.clone(),
                 slot,
             });
-            let words = cx.load_words(address);
-            let pair = cx.result_pair(result);
-            cx.write_pair(pair, words);
+            let words = cx.load_words(address, count);
+            let into = cx.result_words(result, count);
+            cx.write_words(into, words);
         }
         IRInst::VaArg { .. } => return Ok(false),
         IRInst::AtomicLoad { ty, .. }
@@ -1781,49 +2187,83 @@ pub(super) fn lower_instruction<'a>(
 /// An io intrinsic returns a signed count typed `i64`, so on a 32-bit target it defines
 /// a pair: the call's own word, and that word's sign.
 fn io_call<'a>(cx: &mut Cx<'_, 'a>, name: &str, args: Vec<Operand>, result: &'a str) {
-    let pair = cx.result_pair(result);
+    let into = cx.result_words(result, 2);
     cx.out.push(Instruction::Call {
         name: name.to_string(),
         args,
-        ret: Some(pair[0].clone()),
+        ret: Some(into[0].clone()),
     });
     let top = cx.imm(cx.bits() - 1);
-    let hi = cx.bin(IntBinOp::AShr, Operand::Register(pair[0].clone()), top);
+    let hi = cx.bin(IntBinOp::AShr, Operand::Register(into[0].clone()), top);
     let ty = cx.word();
     cx.out.push(Instruction::Copy {
         ty,
-        dst: pair[1].clone(),
+        dst: into[1].clone(),
         src: hi,
     });
 }
 
 /// The words of a float literal reinterpreted as an integer of the same width.
-fn float_literal_words(literal: &Literal<'_>, int64_regs: bool) -> Result<(i64, i64), FromIRError> {
+fn float_literal_words(
+    literal: &Literal<'_>,
+    words: usize,
+    int64_regs: bool,
+) -> Result<Vec<i64>, FromIRError> {
     let bits = match literal {
         Literal::F64(value) => value.to_bits() as i64,
         Literal::F32(value) => i64::from(value.to_bits()),
-        other => return literal_words(other, int64_regs),
+        other => return literal_words(other, words, int64_regs),
     };
-    literal_words(&Literal::I64(bits), int64_regs)
+    literal_words(&Literal::I64(bits), words, int64_regs)
 }
 
-fn extend_to_wide<'a>(
+/// Widens a value into a legalized integer of `words` registers. The source may itself
+/// be legalized, in which case its words are kept and the rest take the fill.
+fn widen<'a>(
     cx: &mut Cx<'_, 'a>,
     result: &'a str,
     source: IRPrim,
     value: &IRVal<'a>,
     signed: bool,
+    words: usize,
 ) -> Result<(), FromIRError> {
+    if let Some(held) = prim_words(source, cx.int64_regs) {
+        if held >= words {
+            return Err(FromIRError::UnsupportedInstruction);
+        }
+        let a = cx.operand_words(value, held)?;
+        let fill = if signed {
+            let top = cx.imm(cx.bits() - 1);
+            let highest = a.top();
+            cx.bin(IntBinOp::AShr, highest, top)
+        } else {
+            cx.imm(0)
+        };
+        let parts = (0..words)
+            .map(|index| {
+                if index < held {
+                    a.at(index)
+                } else {
+                    fill.clone()
+                }
+            })
+            .collect();
+        let into = cx.result_words(result, words);
+        cx.write_words(into, Words(parts));
+        return Ok(());
+    }
     let src = resolve_operand(value, cx.vregs, cx.vars, cx.globals)?;
     let word = cx.word_of(source, src, signed)?;
-    let hi = if signed {
+    let fill = if signed {
         let top = cx.imm(cx.bits() - 1);
         cx.bin(IntBinOp::AShr, word.clone(), top)
     } else {
         cx.imm(0)
     };
-    let pair = cx.result_pair(result);
-    cx.write_pair(pair, Words { lo: word, hi });
+    let mut parts = vec![fill; words];
+    parts[0] = word;
+    let into = cx.result_words(result, words);
+    cx.write_words(into, Words(parts));
     Ok(())
 }
 
@@ -1837,18 +2277,18 @@ fn address_base<'a>(ptr: &IRVal<'a>, cx: &mut Cx<'_, 'a>) -> Result<Register, Fr
 
 pub(super) fn load_wide_parameter(
     address: Register,
+    words: usize,
     vregs: &mut VirtualRegAllocator,
     prelude: &mut Vec<Instruction>,
     int64_regs: bool,
     endianness: Endianness,
-) -> [Register; 2] {
+) -> Vec<Register> {
     let word = word_ty(int64_regs);
     let attrs = MemoryAttrs {
         align: word_bytes(int64_regs) as u8,
         volatile: false,
         stated_align: false,
     };
-    let (lo_at, hi_at) = word_offsets(int64_regs, endianness);
     let mut read = |offset: i32| {
         let dst = Register::Virtual(vregs.allocate_gpr());
         let base = if offset == 0 {
@@ -1874,7 +2314,7 @@ pub(super) fn load_wide_parameter(
         });
         dst
     };
-    let lo = read(lo_at);
-    let hi = read(hi_at);
-    [lo, hi]
+    (0..words)
+        .map(|index| read(word_offset(index, words, int64_regs, endianness)))
+        .collect()
 }

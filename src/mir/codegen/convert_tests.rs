@@ -864,11 +864,27 @@ fn bit_intrinsics_lower_on_wide_operands() {
 }
 
 #[test]
-fn callptr_with_a_wide_argument_is_rejected_by_name() {
+fn callptr_passes_a_wide_argument_as_an_aggregate() {
     let source = "fn @main() -> i64 {\nentry:\n%f = funcaddr @main\n%r = callptr.i64 %f(i128 1)\nret.i64 %r\n}";
     let ir = parse_module(source).expect("parse indirect call");
-    let err = from_ir_x86_64(&ir, "indirect").expect_err("indirect wide argument must not lower");
-    assert!(err.to_string().contains("callptr"), "{err}");
+    let module = from_ir_x86_64(&ir, "indirect").expect("an indirect wide argument lowers");
+    let aggregate = module.functions["main"].blocks[0]
+        .instructions
+        .iter()
+        .find_map(|located| match &located.instr {
+            Instruction::CallIndirect { arg_aggregates, .. } => Some(arg_aggregates.clone()),
+            _ => None,
+        })
+        .expect("the indirect call survived");
+    assert_eq!(
+        aggregate
+            .first()
+            .copied()
+            .flatten()
+            .expect("the wide argument is named as an aggregate")
+            .size,
+        16
+    );
 }
 
 #[test]
@@ -1021,32 +1037,43 @@ mod pairs_on_a_32_bit_target {
     }
 
     #[test]
-    fn a_128_bit_integer_is_refused_by_name_rather_than_truncated() {
-        let error = lower32("fn @main() -> i64 {\nentry:\n %a = add.i128 1, 2\n ret.i64 0\n}")
-            .expect_err("i128 needs four registers on a 32-bit target");
-        let message = error.to_string();
-        assert!(message.contains("128-bit"), "{message}");
-        assert!(message.contains("add.i128"), "{message}");
+    fn a_128_bit_integer_becomes_four_words() {
+        let module = lower32(
+            "fn @f(i128 %a, i128 %b) -> i128 {\nentry:\n %c = add.i128 %a, %b\n ret.i128 %c\n}\n\
+             fn @main() -> i64 {\nentry:\n ret.i64 0\n}",
+        )
+        .expect("lower a 128-bit addition");
+        let widths: Vec<MirType> = module.functions["f"].blocks[0]
+            .instructions
+            .iter()
+            .filter_map(|located| match &located.instr {
+                Instruction::IntBinary { ty, .. } => Some(*ty),
+                _ => None,
+            })
+            .collect();
+        assert!(!widths.is_empty(), "the addition disappeared");
+        assert!(
+            widths
+                .iter()
+                .all(|ty| *ty == MirType::Scalar(ScalarType::I32)),
+            "a word wider than a register survived: {widths:?}"
+        );
     }
 
     #[test]
-    fn a_128_bit_integer_in_a_signature_is_refused_by_name_too() {
-        let error = lower32(
-            "fn @f(i64 %a, i128 %b) -> i64 {\nentry:\n ret.i64 0\n}\n\
+    fn a_128_bit_integer_crosses_a_boundary_as_sixteen_bytes() {
+        let module = lower32(
+            "fn @f(i64 %a, i128 %b) -> i128 {\nentry:\n ret.i128 %b\n}\n\
              fn @main() -> i64 {\nentry:\n ret.i64 0\n}",
         )
-        .expect_err("a parameter needs four registers on a 32-bit target");
-        let message = error.to_string();
-        assert!(message.contains("parameter '%b' of '@f'"), "{message}");
-        assert!(message.contains("128-bit integer"), "{message}");
-        assert!(!message.contains("composite"), "{message}");
-
-        let error = lower32("fn @f() -> i128 {\nentry:\n ret.i128 0\n}")
-            .expect_err("a result needs four registers on a 32-bit target");
-        let message = error.to_string();
-        assert!(message.contains("the return type of '@f'"), "{message}");
-        assert!(message.contains("128-bit integer"), "{message}");
-        assert!(!message.contains("composite"), "{message}");
+        .expect("lower a 128-bit signature");
+        let f = &module.functions["f"];
+        let narrow = f.sig.params[0].aggregate.expect("parameter aggregate");
+        assert_eq!(narrow.size, 8);
+        let wide = f.sig.params[1].aggregate.expect("parameter aggregate");
+        assert_eq!(wide.size, 16);
+        assert_eq!(wide.words_of(PointerWidth::Bits32), 4);
+        assert_eq!(f.sig.ret_aggregate.expect("result aggregate").size, 16);
     }
 
     #[test]
@@ -1503,37 +1530,26 @@ fn from_ir_x86_64_lowers_against_the_x86_64_layout_only() {
 }
 
 #[test]
-fn a_stack_slot_is_not_refused_for_taking_registers() {
-    let ir = parse_module("fn @main() -> i64 {\nentry:\n %q = stackalloc.i128\n ret.i64 0\n}")
-        .expect("parse");
+fn every_32_bit_target_lowers_a_128_bit_slot_and_value() {
+    let ir = parse_module(
+        "fn @main() -> i64 {\nentry:\n %q = stackalloc.i128\n\
+         %a = load.i128 %q\n %b = mul.i128 %a, %a\n store.i128 %q, %b\n ret.i64 0\n}",
+    )
+    .expect("parse");
     for arch in [
         TargetArchitecture::I686,
         TargetArchitecture::Riscv32,
         TargetArchitecture::Armv7,
     ] {
-        let error = from_ir_for_target(&ir, "slot", arch.data_layout())
-            .expect_err("a 32-bit target refuses an i128 slot")
-            .to_string();
-        assert!(error.contains("stackalloc.i128"), "{arch:?}: {error}");
-        assert!(
-            !error.contains("takes four registers"),
-            "{arch:?} blames registers for a stack slot: {error}"
-        );
-        assert!(
-            error.contains("the slot itself is sixteen bytes"),
-            "{arch:?}: {error}"
-        );
+        let module = from_ir_for_target(&ir, "slot", arch.data_layout())
+            .unwrap_or_else(|error| panic!("{arch:?}: {error}"));
+        let loads = module.functions["main"].blocks[0]
+            .instructions
+            .iter()
+            .filter(|located| matches!(located.instr, Instruction::Load { .. }))
+            .count();
+        assert_eq!(loads, 4, "{arch:?} read {loads} words of a 128-bit value");
     }
-}
-
-#[test]
-fn a_value_still_names_the_registers_it_would_take() {
-    let ir = parse_module("fn @main() -> i64 {\nentry:\n %a = add.i128 1, 2\n ret.i64 0\n}")
-        .expect("parse");
-    let error = from_ir_for_target(&ir, "value", TargetArchitecture::I686.data_layout())
-        .expect_err("a 32-bit target refuses an i128 value")
-        .to_string();
-    assert!(error.contains("takes four registers"), "{error}");
 }
 
 #[test]
@@ -1570,7 +1586,8 @@ fn float_aggregate_classification_follows_each_architecture_abi() {
             FloatAggregateAbi::SysV
             | FloatAggregateAbi::Aapcs64
             | FloatAggregateAbi::Riscv64Lp64d
-            | FloatAggregateAbi::S390x => {
+            | FloatAggregateAbi::S390x
+            | FloatAggregateAbi::I386 => {
                 let module = result
                     .unwrap_or_else(|e| panic!("{arch:?} declares placement but failed: {e}"));
                 let class = module.functions["take"].sig.params[0]
@@ -1644,6 +1661,7 @@ fn only_architectures_with_verified_placement_declare_a_float_aggregate_abi() {
         vec![
             TargetArchitecture::X86_64,
             TargetArchitecture::Aarch64,
+            TargetArchitecture::I686,
             TargetArchitecture::Riscv64,
             TargetArchitecture::S390x,
         ],

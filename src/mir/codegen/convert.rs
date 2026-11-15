@@ -45,7 +45,7 @@ use crate::{
             error::FromIRError,
             mapping::{
                 classify_aggregate, is_aggregate, map_ir_prim, map_ir_type, map_ir_vector,
-                signedness_of, wide_aggregate,
+                signedness_of,
             },
         },
         io_intrinsic_result_type,
@@ -150,7 +150,7 @@ struct VarBindings<'a> {
     regs: HashMap<&'a str, Register>,
     classes: HashMap<&'a str, RegisterClass>,
     /// The two 64-bit words of each 128-bit value, low word first.
-    wide: HashMap<&'a str, [Register; 2]>,
+    wide: HashMap<&'a str, Vec<Register>>,
     /// Compiler-rt routines this function calls, to be declared in the module.
     libcalls: BTreeMap<String, wide::LibCall>,
     /// Addresses of legalized pairs handed to a call where the callee's declaration
@@ -610,10 +610,10 @@ pub fn from_ir_for_target(
                     "@{global_name} is a 128-bit integer; globals of i128 and u128 are not lowered yet"
                 )));
             }
-            if wide::is_wide_type(&resolved, int64_regs) {
-                // Two words, addressed as bytes: the scalar type would name a register
-                // the target does not have.
-                let size = wide_aggregate(int64_regs).size;
+            if let Some(words) = wide::type_words(&resolved, int64_regs) {
+                // Several words, addressed as bytes: the scalar type would name a
+                // register the target does not have.
+                let size = wide::words_aggregate(words, int64_regs).size;
                 let align = size.max(declared_align(decl.align));
                 let bytes =
                     wide_global_bytes(global_name, decl.initializer.as_ref(), size, endianness)?;
@@ -1310,24 +1310,6 @@ fn convert_function<'a>(
         mir_sig.kernel = Some(Default::default());
     }
 
-    let quad_at_boundary = |ty: &IRType<'a>| {
-        resolve_type_names(ty, &module.type_declarations)
-            .is_some_and(|resolved| wide::is_quad_type(&resolved, int64_regs))
-    };
-    if quad_at_boundary(&f.signature.return_type) {
-        return Err(FromIRError::NotLegalizable(format!(
-            "the return type of '@{name}' names a 128-bit integer on a 32-bit target: that takes four registers, and only pairs are split"
-        )));
-    }
-    for param in &f.signature.params {
-        if quad_at_boundary(&param.ty) {
-            return Err(FromIRError::NotLegalizable(format!(
-                "parameter '%{}' of '@{name}' names a 128-bit integer on a 32-bit target: that takes four registers, and only pairs are split",
-                param.name
-            )));
-        }
-    }
-
     match &f.signature.return_type {
         IRType::Void => {}
         other if zero_sized(other, module, layout) => {
@@ -1402,15 +1384,16 @@ fn convert_function<'a>(
                 dst: addr.clone(),
                 slot,
             });
-            if wide::is_wide_type(&resolved, int64_regs) {
-                let pair = wide::load_wide_parameter(
+            if let Some(words) = wide::type_words(&resolved, int64_regs) {
+                let held = wide::load_wide_parameter(
                     addr,
+                    words,
                     &mut vreg_alloc,
                     &mut aggregate_prelude,
                     int64_regs,
                     endianness,
                 );
-                var_to_reg.wide.insert(param.name, pair);
+                var_to_reg.wide.insert(param.name, held);
             } else {
                 var_to_reg.insert(param.name, addr);
             }
