@@ -45,7 +45,7 @@ use crate::{
 use abi::{INCOMING_BASE, PTR, WORD};
 use lamina_codegen::abi::common_call_stub;
 use lamina_mir::SourceLoc;
-use lamina_platform::{TargetArchitecture, TargetOperatingSystem};
+use lamina_platform::{PointerWidth, TargetArchitecture, TargetOperatingSystem};
 use operand::{
     EAX, ECX, EDX, Slots, byte_reg, is_single, load_operand, pop_float, push_float, slot,
     store_register, unsupported, word_reg,
@@ -995,10 +995,47 @@ fn emit_instruction<W: Write>(
             }
             pop_float(dst, writer, slots, is_single(to))?;
         }
-        MirInst::FloatToInt { .. } => {
-            return Err(unsupported(
-                "i686 float to integer conversion is not implemented: x87 reports an out-of-range or NaN operand as the integer indefinite, not as the saturating result the contract names",
-            ));
+        MirInst::FloatToInt {
+            from,
+            to,
+            signed,
+            dst,
+            src,
+        } => {
+            // x87 answers an out-of-range or NaN operand with the integer indefinite,
+            // so the value is brought into range before it is converted: a NaN becomes
+            // zero and anything past an end of the type becomes that end. The bounds
+            // are whole numbers, so clamping first and truncating after gives what
+            // truncating a representable value would have given.
+            reject_wide(to, "float to integer conversion")?;
+            let bits = to.size_bytes(PointerWidth::Bits32) * 8;
+            let (low, high) = if *signed {
+                (-(1i64 << (bits - 1)), (1i64 << (bits - 1)) - 1)
+            } else {
+                (0, (1i64 << bits) - 1)
+            };
+            push_float(src, writer, slots, is_single(from))?;
+            writeln!(writer, "    fldz")?;
+            writeln!(writer, "    fucomi %st(1), %st")?;
+            writeln!(writer, "    fcmovnu %st(1), %st")?;
+            writeln!(writer, "    fstp %st(1)")?;
+            for (bound, keep) in [(low, "fcmovb"), (high, "fcmova")] {
+                push_long(writer, bound)?;
+                writeln!(writer, "    fucomi %st(1), %st")?;
+                writeln!(writer, "    {keep} %st(1), %st")?;
+                writeln!(writer, "    fstp %st(1)")?;
+            }
+            writeln!(writer, "    subl $16, %esp")?;
+            writeln!(writer, "    fnstcw 8(%esp)")?;
+            writeln!(writer, "    movw 8(%esp), %ax")?;
+            writeln!(writer, "    orw $3072, %ax")?;
+            writeln!(writer, "    movw %ax, 12(%esp)")?;
+            writeln!(writer, "    fldcw 12(%esp)")?;
+            writeln!(writer, "    fistpll (%esp)")?;
+            writeln!(writer, "    fldcw 8(%esp)")?;
+            writeln!(writer, "    movl (%esp), {EAX}")?;
+            writeln!(writer, "    addl $16, %esp")?;
+            store_register(EAX, dst, writer, slots)?;
         }
         MirInst::VectorOp { .. } => {
             return Err(unsupported("i686 vector operations are not implemented"));
@@ -1027,6 +1064,16 @@ fn emit_instruction<W: Write>(
             ));
         }
     }
+    Ok(())
+}
+
+/// Puts a whole number on the x87 stack, through the only form that reaches sixty-four
+/// bits.
+fn push_long<W: Write>(writer: &mut W, value: i64) -> Result<(), LaminaError> {
+    writeln!(writer, "    pushl ${}", (value >> 32) as i32)?;
+    writeln!(writer, "    pushl ${}", value as u32 as i32)?;
+    writeln!(writer, "    fildll (%esp)")?;
+    writeln!(writer, "    addl $8, %esp")?;
     Ok(())
 }
 
