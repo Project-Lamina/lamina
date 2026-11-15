@@ -17,6 +17,7 @@
 mod abi;
 mod inline_asm;
 mod operand;
+mod overflow;
 #[cfg(test)]
 mod tests;
 mod variadic;
@@ -28,9 +29,7 @@ use crate::mir_codegen::common::{
     emit_symbol_visibility, external_names, integer_conversion_with_width, lamina_to_codegen_error,
     parallel_codegen_error,
 };
-use crate::mir_codegen::common::{
-    reject_thread_local_globals, unsupported_overflow_flag, unsupported_thread_local,
-};
+use crate::mir_codegen::common::{reject_thread_local_globals, unsupported_thread_local};
 use crate::{
     error::LaminaError,
     mir::{
@@ -79,14 +78,11 @@ fn reject_wide(ty: &MirType, what: &str) -> Result<(), LaminaError> {
 
 /// cdecl returns a struct through a hidden pointer and a legalized 64-bit integer in
 /// `%edx:%eax`, so only the former takes the sret slot.
-fn returns_through_memory(aggregate: Aggregate, func_name: &str) -> Result<bool, LaminaError> {
-    if aggregate.is_wide_scalar() && aggregate.size > 2 * WORD {
-        return Err(unsupported(format!(
-            "i686 return of @{func_name}: a legalized integer of {} bytes does not fit in %edx:%eax",
-            aggregate.size
-        )));
-    }
-    Ok(aggregate.is_composite())
+/// Whether the callee writes its result through a hidden pointer. Only a legalized
+/// integer that fits `%edx:%eax` comes back in registers; anything larger, and every
+/// composite, is written to a buffer the caller supplies.
+fn returns_through_memory(aggregate: Aggregate) -> bool {
+    aggregate.is_composite() || aggregate.size > 2 * WORD
 }
 
 /// Type a variadic or unprototyped argument reaches the callee as: a float as a
@@ -304,11 +300,9 @@ fn compile_function(
     let wide_return = func
         .sig
         .ret_aggregate
-        .is_some_and(|aggregate| aggregate.is_wide_scalar());
+        .is_some_and(|aggregate| aggregate.is_wide_scalar() && !returns_through_memory(aggregate));
     let sret = match func.sig.ret_aggregate {
-        Some(aggregate)
-            if returns_through_memory(aggregate, func_name).map_err(lamina_to_codegen_error)? =>
-        {
+        Some(aggregate) if returns_through_memory(aggregate) => {
             let offset = abi::slot_offset(total);
             total += 1;
             Some((offset, aggregate.size))
@@ -644,9 +638,14 @@ fn emit_instruction<W: Write>(
         MirInst::ThreadLocalAddr { .. } => {
             return Err(unsupported_thread_local("i686"));
         }
-        MirInst::IntOverflow { .. } => {
-            return Err(unsupported_overflow_flag("i686"));
-        }
+        MirInst::IntOverflow {
+            op,
+            ty,
+            signed,
+            dst,
+            lhs,
+            rhs,
+        } => overflow::emit(writer, slots, op, ty, *signed, dst, lhs, rhs)?,
         MirInst::SymbolAddress { dst, symbol } => {
             writeln!(writer, "    movl ${symbol}, {EAX}")?;
             store_register(EAX, dst, writer, slots)?;
@@ -804,15 +803,7 @@ fn emit_instruction<W: Write>(
             }
             let call = ctx.signatures.call_abi(name, args, ctx.func);
             let target = call_target(name, ctx.target_os);
-            emit_call(
-                &call,
-                name,
-                args,
-                ret.as_ref(),
-                Some(&target),
-                writer,
-                slots,
-            )?;
+            emit_call(&call, args, ret.as_ref(), Some(&target), writer, slots)?;
         }
         MirInst::CallIndirect {
             target,
@@ -824,12 +815,6 @@ fn emit_instruction<W: Write>(
             ret_aggregate,
             arg_aggregates,
         } => {
-            if ret_aggregate.is_some() || arg_aggregates.iter().any(Option::is_some) {
-                return Err(unsupported(
-                    "i686 does not lower an aggregate passed or returned through a function pointer"
-                        .to_string(),
-                ));
-            }
             let mut types = arg_types.clone();
             if let Some(fixed) = variadic_fixed {
                 for (index, ty) in types.iter_mut().enumerate() {
@@ -842,12 +827,18 @@ fn emit_instruction<W: Write>(
             // the callee as the aggregate it was spilled to, not as its address.
             let aggregates: Vec<Option<usize>> = args
                 .iter()
-                .map(|arg| ctx.func.variadic_wide_argument(arg).map(|a| a.size))
+                .enumerate()
+                .map(|(index, arg)| {
+                    ctx.func
+                        .variadic_wide_argument(arg)
+                        .or_else(|| arg_aggregates.get(index).copied().flatten())
+                        .map(|a| a.size)
+                })
                 .collect();
             let call = CallAbi {
                 aggregates,
                 types,
-                ret_aggregate: None,
+                ret_aggregate: *ret_aggregate,
                 ret_ty: *ret_ty,
             };
             load_operand(target, writer, slots, EAX)?;
@@ -855,15 +846,7 @@ fn emit_instruction<W: Write>(
             // alignment, and released with the argument area after the call.
             writeln!(writer, "    subl ${INDIRECT_AREA}, %esp")?;
             writeln!(writer, "    movl {EAX}, (%esp)")?;
-            emit_call(
-                &call,
-                "the called pointer",
-                args,
-                ret.as_ref(),
-                None,
-                writer,
-                slots,
-            )?;
+            emit_call(&call, args, ret.as_ref(), None, writer, slots)?;
         }
         MirInst::TailCall { name, args } => {
             if ctx.sret.is_some() {
@@ -873,7 +856,7 @@ fn emit_instruction<W: Write>(
             }
             let call = ctx.signatures.call_abi(name, args, ctx.func);
             let target = call_target(name, ctx.target_os);
-            emit_call(&call, name, args, None, Some(&target), writer, slots)?;
+            emit_call(&call, args, None, Some(&target), writer, slots)?;
             abi::epilogue(writer, 0)?;
         }
         MirInst::Ret { value } => {
@@ -1269,17 +1252,15 @@ const INDIRECT_AREA: usize = TargetArchitecture::I686.stack_alignment_at_call();
 /// releases along with it.
 fn emit_call<W: Write>(
     call: &CallAbi,
-    callee: &str,
     args: &[Operand],
     ret: Option<&Register>,
     target: Option<&str>,
     writer: &mut W,
     slots: &Slots,
 ) -> Result<(), LaminaError> {
-    let wide_result = match call.ret_aggregate {
-        Some(aggregate) => !returns_through_memory(aggregate, callee)?,
-        None => false,
-    };
+    let wide_result = call
+        .ret_aggregate
+        .is_some_and(|aggregate| !returns_through_memory(aggregate));
     let sret_buffer = match (call.ret_aggregate, ret) {
         (Some(_), _) if wide_result => None,
         (Some(_), Some(Register::Virtual(vreg))) => Some(slot(slots, vreg)?),
