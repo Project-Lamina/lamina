@@ -1,15 +1,13 @@
 use crate::mir::register::PhysicalReg;
 use crate::mir_codegen::common::emit_source_loc;
 use crate::mir_codegen::common::external_names;
+use crate::mir_codegen::common::reject_underaligned_accesses_wider_than;
 use crate::mir_codegen::common::{
     CopyLocation, FunctionEmissionPlan, coalesce_dying_inputs, emit_global_data,
     emit_global_directives, emit_symbol_visibility, self_tail_arguments, self_tail_schedule,
 };
 use crate::mir_codegen::common::{emit_debug_file, emit_gnu_stack_note};
-use crate::mir_codegen::common::{
-    reject_thread_local_globals, reject_underaligned_accesses_wider_than, unsupported_thread_local,
-};
-use lamina_mir::SourceLoc;
+use lamina_mir::{SourceLoc, TlsModel};
 mod atomic;
 mod bit;
 mod inline_asm;
@@ -555,7 +553,6 @@ fn emit_riscv_module<W: Write>(
     settings: &MirCodegenSettings,
 ) -> Result<(), LaminaError> {
     reject_unsplit_wide_values(module, target)?;
-    reject_thread_local_globals(module, "RISC-V")?;
     // An integer no wider than a register is moved one byte at a time when the stated
     // alignment says the address may fall anywhere. Anything wider, and every float,
     // still needs an aligned address.
@@ -2607,8 +2604,36 @@ fn emit_instruction_riscv<W: Write>(
         | MirInst::Fence { .. } => {
             atomic::emit(inst, writer, reg_alloc, stack_slots, pointer_width)?
         }
-        MirInst::ThreadLocalAddr { .. } => {
-            return Err(unsupported_thread_local("RISC-V"));
+        MirInst::ThreadLocalAddr { dst, symbol, model } => {
+            // Local exec folds the offset from the thread pointer into the
+            // instructions; initial exec reads it from the GOT entry the linker
+            // builds, which is addressed from the program counter.
+            match model {
+                TlsModel::LocalExec => {
+                    writeln!(writer, "    lui a0, %tprel_hi({symbol})")?;
+                    writeln!(writer, "    add a0, a0, tp, %tprel_add({symbol})")?;
+                    writeln!(writer, "    addi a0, a0, %tprel_lo({symbol})")?;
+                }
+                TlsModel::InitialExec => {
+                    let seq = ctx.label_seq;
+                    ctx.label_seq = ctx.label_seq.saturating_add(1);
+                    let label = format!(".Ltls{seq}");
+                    let load = ctx.target.load_word();
+                    writeln!(writer, "{label}:")?;
+                    writeln!(writer, "    auipc a0, %tls_ie_pcrel_hi({symbol})")?;
+                    writeln!(writer, "    {load} a0, %pcrel_lo({label})(a0)")?;
+                    writeln!(writer, "    add a0, a0, tp")?;
+                }
+            }
+            match dst {
+                Register::Virtual(vreg) => {
+                    store_register_to_register("a0", vreg, writer, reg_alloc, stack_slots)?;
+                }
+                Register::Physical(phys) if phys.name != "a0" => {
+                    writeln!(writer, "    mv {}, a0", phys.name)?;
+                }
+                Register::Physical(_) => {}
+            }
         }
         MirInst::IntOverflow {
             op,
