@@ -49,22 +49,13 @@ ILP32_UNSUPPORTED = {
     },
     'thread_local_storage': 'thread-local storage is not implemented by this backend',
     'vector_operations': 'this backend has no vector unit',
-    'zero_size_aggregates': 'an aggregate crossing a boundary holds at least one byte here',
-    # The backend walks a forwarded list correctly; what it is handed is wrong. A
-    # variadic argument is promoted to i64, and on a 32-bit target that is a register
-    # pair, but the caller passes an integer literal beyond the named parameters as a
-    # single word, so `va_arg.i64` reads one word of it and one of the next.
-    'va_list_forwarded': 'a variadic integer literal is passed as one word, and va_arg.i64 reads a pair',
 }
 
 I686_UNSUPPORTED = {
-    'fptoint_signed': 'x87 reports an out-of-range or NaN operand as the integer indefinite, not as the saturating result the contract names',
-    'fptoint_unsigned': 'x87 reports an out-of-range or NaN operand as the integer indefinite, not as the saturating result the contract names',
     **ILP32_UNSUPPORTED,
 }
 
 ARMV7_UNSUPPORTED = {
-    'load_store_alignment': 'armv7 memory instructions fault on an unaligned address',
     'inline_asm_rdtsc': 'rdtsc reads the x86 timestamp counter; armv7 reads the cycle counter only from a privileged mode',
     **FLOAT_AGGREGATE_UNSUPPORTED,
     **ILP32_UNSUPPORTED,
@@ -81,8 +72,6 @@ S390X_UNSUPPORTED = {
 # is compiled in place of `<name>.lamina` for that target and shares its expected
 # output; variant files are never run as testcases of their own.
 RISCV64_UNSUPPORTED = {
-    'checked_arithmetic': "the backend has no overflow flag for '<op>.ovf'",
-    'load_store_alignment': 'the backend issues no unaligned store',
     'thread_local_storage': 'thread-local storage is not implemented for RISC-V',
     'vector_operations': 'vectors need the V extension, which rv64imafd does not carry',
 }
