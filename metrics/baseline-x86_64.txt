@@ -573,6 +573,40 @@ branches 34
 frame main 96
 frame put_u64 16
 
+[atomic_live_result O0]
+insns 167
+spills 59
+calls 8
+branches 4
+frame main 112
+frame print_i64 64
+frame put_u64 48
+
+[atomic_live_result O1]
+insns 170
+spills 23
+calls 8
+branches 4
+frame main 64
+frame print_i64 16
+frame put_u64 16
+
+[atomic_live_result O2]
+insns 367
+spills 30
+calls 7
+branches 14
+frame main 64
+frame put_u64 16
+
+[atomic_live_result O3]
+insns 365
+spills 30
+calls 7
+branches 14
+frame main 64
+frame put_u64 16
+
 [atomic_orderings O0]
 insns 2414
 spills 1122
