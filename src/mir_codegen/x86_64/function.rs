@@ -65,7 +65,11 @@ pub(super) fn instruction_clobbers(
         | MirInst::Load { .. }
         | MirInst::Store { .. }
         | MirInst::Lea { .. }
-        | MirInst::Select { .. } => scratch,
+        | MirInst::Select { .. }
+        | MirInst::AtomicLoad { .. }
+        | MirInst::AtomicStore { .. }
+        | MirInst::AtomicBinary { .. }
+        | MirInst::AtomicCompareExchange { .. } => scratch,
         MirInst::VaStart { .. } | MirInst::VaArg { .. } | MirInst::VaCopy { .. } => {
             vec!["rcx", "rdx"]
         }
