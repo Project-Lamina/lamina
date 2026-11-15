@@ -327,35 +327,55 @@ pub(crate) fn emit_call_indirect<W: Write>(
     target: &Operand,
     arg_types: &[MirType],
     args: &[Operand],
+    arg_aggregates: &[Option<Aggregate>],
     variadic_fixed: Option<usize>,
     ret: Option<&Register>,
     ret_ty: Option<MirType>,
+    ret_aggregate: Option<Aggregate>,
     ctx: &Ctx<'_>,
     scratch: &mut Scratch,
 ) -> Result<(), LaminaError> {
-    // A legalized pair the called pointer's signature does not type reaches the
-    // callee as the aggregate it was spilled to, not as its address.
+    // An aggregate reaches the callee as the bytes it was spilled to, not as its
+    // address, whether the instruction names it or it is a legalized integer the
+    // called pointer's signature does not type.
     let kinds: Vec<ArgKind> = arg_types
         .iter()
         .zip(args)
-        .map(|(ty, arg)| match ctx.func.variadic_wide_argument(arg) {
-            Some(aggregate) => ArgKind::of(MirType::Scalar(ScalarType::Ptr), Some(aggregate)),
-            None => ArgKind::of(*ty, None),
+        .enumerate()
+        .map(|(index, (ty, arg))| {
+            match ctx
+                .func
+                .variadic_wide_argument(arg)
+                .or_else(|| arg_aggregates.get(index).copied().flatten())
+            {
+                Some(aggregate) => ArgKind::of(MirType::Scalar(ScalarType::Ptr), Some(aggregate)),
+                None => ArgKind::of(*ty, None),
+            }
         })
         .collect();
-    let plan = plan_call(args, kinds, variadic_fixed, false, false)?;
+    let hidden = returns_in_memory(ret_aggregate);
+    let plan = plan_call(args, kinds, variadic_fixed, hidden, false)?;
 
     let callee = scratch.alloc()?;
     materialize(w, target, callee, ctx.frame)?;
     sp_adjust(w, "sub", plan.space)?;
     emit_stack_arguments(w, &plan.outgoing, "sp", 0, ctx, scratch)?;
     emit_register_arguments(w, &plan.outgoing, ctx, scratch)?;
+    if hidden {
+        let dst = ret.ok_or_else(|| {
+            unsupported("armv7 memory return needs a destination register".to_string())
+        })?;
+        let offset = ctx.frame.slot_of(dst).ok_or_else(|| {
+            unsupported("armv7 memory return destination has no frame slot".to_string())
+        })?;
+        frame_address(w, "r0", offset)?;
+    }
     writeln!(w, "    blx {callee}")?;
     sp_adjust(w, "add", plan.space)?;
     scratch.free(callee);
 
     let float = ret_ty.filter(|ty| ty.is_float());
-    store_call_result(w, ret, None, float, false, ctx, scratch)
+    store_call_result(w, ret, ret_aggregate, float, false, ctx, scratch)
 }
 
 pub(crate) fn emit_tail_call<W: Write>(

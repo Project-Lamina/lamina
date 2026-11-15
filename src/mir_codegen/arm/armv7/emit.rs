@@ -1,6 +1,6 @@
 //! Instruction lowering for the armv7 backend.
 
-use crate::mir_codegen::common::{unsupported_overflow_flag, unsupported_thread_local};
+use crate::mir_codegen::common::unsupported_thread_local;
 use std::io::Write;
 
 use crate::{
@@ -129,9 +129,14 @@ pub(crate) fn emit_instruction<W: Write>(
         MirInst::ThreadLocalAddr { .. } => {
             return Err(unsupported_thread_local("armv7"));
         }
-        MirInst::IntOverflow { .. } => {
-            return Err(unsupported_overflow_flag("armv7"));
-        }
+        MirInst::IntOverflow {
+            op,
+            ty,
+            signed,
+            dst,
+            lhs,
+            rhs,
+        } => super::overflow::emit(w, op, ty, *signed, dst, lhs, rhs, ctx.frame, scratch)?,
         MirInst::SymbolAddress { dst, symbol } => {
             let label = ctx.abi.mangle_function_name(symbol);
             let value = scratch.alloc()?;
@@ -462,25 +467,19 @@ pub(crate) fn emit_instruction<W: Write>(
             ret_ty,
             ret_aggregate,
             arg_aggregates,
-        } => {
-            if ret_aggregate.is_some() || arg_aggregates.iter().any(Option::is_some) {
-                return Err(unsupported(
-                    "ARMv7 does not lower an aggregate passed or returned through a function pointer"
-                        .to_string(),
-                ));
-            }
-            call::emit_call_indirect(
-                w,
-                target,
-                arg_types,
-                args,
-                *variadic_fixed,
-                ret.as_ref(),
-                *ret_ty,
-                ctx,
-                scratch,
-            )?
-        }
+        } => call::emit_call_indirect(
+            w,
+            target,
+            arg_types,
+            args,
+            arg_aggregates,
+            *variadic_fixed,
+            ret.as_ref(),
+            *ret_ty,
+            *ret_aggregate,
+            ctx,
+            scratch,
+        )?,
         MirInst::TailCall { name, args } => call::emit_tail_call(w, name, args, ctx, scratch)?,
         MirInst::Ret { value } => call::emit_return(w, value.as_ref(), ctx, scratch)?,
 

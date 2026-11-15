@@ -12,6 +12,7 @@ mod call;
 mod emit;
 mod inline_asm;
 mod operand;
+mod overflow;
 #[cfg(test)]
 mod tests;
 mod variadic;
