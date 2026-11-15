@@ -264,6 +264,7 @@ impl fmt::Display for GlobalInit<'_> {
 ///         size: 13,
 ///     },
 ///     is_extern: false,
+///     is_readonly: false,
 ///     initializer: Some(GlobalInit::Value(Value::Constant(Literal::String("Hello, World!")))),
 ///     exported: false,
 ///     visibility: None,
@@ -281,6 +282,9 @@ pub struct GlobalDeclaration<'a> {
     /// Whether the symbol is defined in another module (declared with `@extern`).
     /// Such a global reserves no storage here.
     pub is_extern: bool,
+    /// Whether the global is read-only (declared with `@readonly`). Such a global
+    /// needs an initializer and is placed in the target's read-only data section.
+    pub is_readonly: bool,
     /// Optional initializer (None for external symbols)
     pub initializer: Option<GlobalInit<'a>>,
     /// Whether the global is visible to other modules (declared with `@export`)
@@ -1002,6 +1006,9 @@ impl fmt::Display for GlobalDeclaration<'_> {
         if self.is_extern {
             write!(f, "@extern ")?;
         }
+        if self.is_readonly {
+            write!(f, "@readonly ")?;
+        }
         if self.exported {
             write!(f, "@export ")?;
         }
@@ -1032,6 +1039,9 @@ fn write_global(
     }
     if decl.is_extern {
         write!(f, "@extern ")?;
+    }
+    if decl.is_readonly {
+        write!(f, "@readonly ")?;
     }
     if decl.exported {
         write!(f, "@export ")?;
@@ -1213,6 +1223,7 @@ mod tests {
             name: "count",
             ty: Type::Primitive(PrimitiveType::I32),
             is_extern: false,
+            is_readonly: false,
             initializer: Some(GlobalInit::Value(Value::Constant(Literal::I32(0)))),
             exported: false,
             visibility: None,
@@ -1229,6 +1240,7 @@ mod tests {
                 size: 256,
             },
             is_extern: false,
+            is_readonly: false,
             initializer: None,
             exported: false,
             visibility: None,
@@ -1248,6 +1260,7 @@ mod tests {
                 size: 1048576,
             },
             is_extern: false,
+            is_readonly: false,
             initializer: None,
             exported: true,
             visibility: None,
@@ -1288,6 +1301,7 @@ mod tests {
                         name,
                         ty: Type::Primitive(PrimitiveType::I32),
                         is_extern: false,
+                        is_readonly: false,
                         initializer: Some(GlobalInit::Value(Value::Constant(Literal::I32(1)))),
                         exported: false,
                         visibility: None,
@@ -1341,6 +1355,7 @@ mod tests {
                 name: "PI",
                 ty: Type::Primitive(PrimitiveType::F32),
                 is_extern: false,
+                is_readonly: false,
                 initializer: Some(GlobalInit::Value(Value::Constant(Literal::F32(PI)))),
                 exported: false,
                 visibility: None,

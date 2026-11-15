@@ -962,6 +962,7 @@ global $grid: [2 x [2 x i32]] = [[1, 2], [3, 4]]
                 name: "count",
                 ty: Type::Primitive(PrimitiveType::I32),
                 is_extern: false,
+                is_readonly: false,
                 initializer: Some(GlobalInit::Value(Value::Constant(Literal::I32(7)))),
                 exported: true,
                 visibility: None,

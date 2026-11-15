@@ -19,6 +19,7 @@ use crate::{
 
 const GLOBAL_ANNOTATION_NAMES: &[&str] = &[
     "extern",
+    "readonly",
     "export",
     "align",
     "thread_local",
@@ -33,6 +34,7 @@ const GLOBAL_ANNOTATION_NAMES: &[&str] = &[
 #[derive(Debug, Default)]
 pub struct GlobalAnnotations {
     pub is_extern: bool,
+    pub is_readonly: bool,
     pub exported: bool,
     pub align: Option<u32>,
     pub thread_local: Option<TlsModel>,
@@ -58,6 +60,12 @@ pub fn parse_global_annotations(
                     return Err(state.error("Duplicate annotation: @extern"));
                 }
                 annotations.is_extern = true;
+            }
+            "readonly" => {
+                if annotations.is_readonly {
+                    return Err(state.error("Duplicate annotation: @readonly"));
+                }
+                annotations.is_readonly = true;
             }
             "export" => {
                 if annotations.exported {
@@ -114,6 +122,7 @@ pub fn parse_global_declaration<'a>(
 ) -> Result<GlobalDeclaration<'a>, LaminaError> {
     let GlobalAnnotations {
         is_extern,
+        is_readonly,
         exported,
         align,
         thread_local,
@@ -159,6 +168,18 @@ pub fn parse_global_declaration<'a>(
             )));
         }
     }
+    if is_readonly {
+        if is_extern {
+            return Err(state.error(format!(
+                "Conflicting annotations on global ${name}: @readonly and @extern cannot be used together"
+            )));
+        }
+        if thread_local.is_some() {
+            return Err(state.error(format!(
+                "Conflicting annotations on global ${name}: @readonly and @thread_local cannot be used together"
+            )));
+        }
+    }
     state.expect_char(':')?;
     let ty = parse_type(state)?;
 
@@ -184,10 +205,17 @@ pub fn parse_global_declaration<'a>(
         )));
     }
 
+    if is_readonly && initializer.is_none() {
+        return Err(state.error(format!(
+            "global ${name} is @readonly but has no initializer\n  Hint: a read-only global must hold its value; add `= ...` or drop @readonly"
+        )));
+    }
+
     Ok(GlobalDeclaration {
         name,
         ty,
         is_extern,
+        is_readonly,
         initializer,
         exported,
         visibility,
@@ -534,5 +562,31 @@ mod tests {
             format!("{error}").contains("float type"),
             "unexpected message: {error}"
         );
+    }
+
+    #[test]
+    fn a_readonly_global_round_trips_with_its_annotation() {
+        let module = parse_module("@readonly\nglobal $msg: [3 x i8] = \"hi\"\n")
+            .expect("a read-only global with an initializer");
+        let global = &module.global_declarations["msg"];
+        assert!(global.is_readonly);
+        let printed = module.to_string();
+        assert!(printed.contains("@readonly global $msg: [3 x i8] = \"hi\""), "{printed}");
+        assert_eq!(parse_module(&printed).expect("round trip"), module);
+    }
+
+    #[test]
+    fn a_readonly_global_takes_an_initializer_and_no_extern_or_thread_local() {
+        for (source, fragment) in [
+            ("@readonly\nglobal $x: i64\n", "no initializer"),
+            ("@readonly\n@extern\nglobal $x: i64\n", "@extern"),
+            ("@readonly\n@thread_local\nglobal $x: i64 = 1\n", "@thread_local"),
+            ("@readonly\n@readonly\nglobal $x: i64 = 1\n", "Duplicate"),
+        ] {
+            let message = parse_module(source)
+                .expect_err("the combination is refused")
+                .to_string();
+            assert!(message.contains(fragment), "{source}\n{message}");
+        }
     }
 }

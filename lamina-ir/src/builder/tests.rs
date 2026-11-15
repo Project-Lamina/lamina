@@ -1728,6 +1728,7 @@ mod tests {
                 name: "count",
                 ty: Type::Primitive(PrimitiveType::I32),
                 is_extern: false,
+                is_readonly: false,
                 initializer: Some(GlobalInit::Value(Value::Constant(Literal::I32(7)))),
                 exported: true,
                 visibility: None,
@@ -1786,6 +1787,7 @@ mod tests {
             name: "secret",
             ty: Type::Primitive(PrimitiveType::I64),
             is_extern: false,
+            is_readonly: false,
             initializer: None,
             exported: true,
             visibility: Some(GlobalVisibility::Internal),
@@ -1803,6 +1805,7 @@ mod tests {
             name: "buf",
             ty: Type::Primitive(PrimitiveType::I64),
             is_extern: false,
+            is_readonly: false,
             initializer: None,
             exported: false,
             visibility: None,
@@ -1823,6 +1826,7 @@ mod tests {
                 size: 4,
             },
             is_extern: false,
+            is_readonly: false,
             initializer: Some(GlobalInit::Value(Value::Constant(Literal::String("abc")))),
             exported: false,
             visibility: None,
@@ -1837,6 +1841,52 @@ mod tests {
     fn test_string_global_rejects_quote() {
         let mut builder = IRBuilder::new();
         builder.declare_string_global("quoted", "say \"hi\"");
+    }
+
+    #[test]
+    fn test_readonly_string_global_is_marked_readonly() {
+        let mut builder = IRBuilder::new();
+        builder.declare_readonly_string_global("greeting", "hi");
+        let module = builder.build();
+        let greeting = &module.global_declarations["greeting"];
+        assert!(greeting.is_readonly);
+        assert!(format!("{module}").contains("@readonly global $greeting: [3 x i8] = \"hi\"\n"));
+    }
+
+    #[test]
+    #[should_panic(expected = "is @readonly but has no initializer")]
+    fn test_readonly_global_without_initializer_panics() {
+        let mut builder = IRBuilder::new();
+        builder.declare_global(GlobalDeclaration {
+            name: "table",
+            ty: Type::Primitive(PrimitiveType::I64),
+            is_extern: false,
+            is_readonly: true,
+            initializer: None,
+            exported: false,
+            visibility: None,
+            weak: false,
+            align: None,
+            thread_local: None,
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "@readonly and @extern cannot be used together")]
+    fn test_readonly_extern_global_panics() {
+        let mut builder = IRBuilder::new();
+        builder.declare_global(GlobalDeclaration {
+            name: "outside",
+            ty: Type::Primitive(PrimitiveType::I64),
+            is_extern: true,
+            is_readonly: true,
+            initializer: None,
+            exported: false,
+            visibility: None,
+            weak: false,
+            align: None,
+            thread_local: None,
+        });
     }
 
     fn misuse(builder: &mut IRBuilder<'_>) -> BuildError {
@@ -1919,6 +1969,7 @@ mod tests {
             name: "secret",
             ty: Type::Primitive(PrimitiveType::I64),
             is_extern: false,
+            is_readonly: false,
             initializer: None,
             exported: true,
             visibility: Some(GlobalVisibility::Internal),

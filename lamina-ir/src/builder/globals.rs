@@ -32,6 +32,23 @@ impl<'a> IRBuilder<'a> {
                     )
                 })?;
             }
+            if declaration.is_readonly {
+                require(!declaration.is_extern, BuildErrorKind::InvalidGlobal, || {
+                    format!(
+                        "Conflicting annotations on global ${name}: @readonly and @extern cannot be used together"
+                    )
+                })?;
+                require(declaration.thread_local.is_none(), BuildErrorKind::InvalidGlobal, || {
+                    format!(
+                        "Conflicting annotations on global ${name}: @readonly and @thread_local cannot be used together"
+                    )
+                })?;
+                require(declaration.initializer.is_some(), BuildErrorKind::InvalidGlobal, || {
+                    format!(
+                        "global '${name}' is @readonly but has no initializer; a read-only global must hold its value"
+                    )
+                })?;
+            }
             if let Some(align) = declaration.align {
                 require(align.is_power_of_two(), BuildErrorKind::InvalidGlobal, || {
                     format!(
@@ -74,6 +91,23 @@ impl<'a> IRBuilder<'a> {
     /// # Panics
     /// Panics when the name is already declared.
     pub fn declare_string_global(&mut self, name: &'a str, text: &'a str) -> &mut Self {
+        self.declare_text_global(name, text, false)
+    }
+
+    /// Declares a NUL-terminated byte array holding `text`, placed in read-only data.
+    ///
+    /// # Panics
+    /// Panics when the name is already declared.
+    pub fn declare_readonly_string_global(&mut self, name: &'a str, text: &'a str) -> &mut Self {
+        self.declare_text_global(name, text, true)
+    }
+
+    fn declare_text_global(
+        &mut self,
+        name: &'a str,
+        text: &'a str,
+        is_readonly: bool,
+    ) -> &mut Self {
         self.declare_global(GlobalDeclaration {
             name,
             ty: Type::Array {
@@ -81,6 +115,7 @@ impl<'a> IRBuilder<'a> {
                 size: text.len() as u64 + 1,
             },
             is_extern: false,
+            is_readonly,
             initializer: Some(GlobalInit::Value(Value::Constant(Literal::String(text)))),
             exported: false,
             visibility: None,
