@@ -47,7 +47,6 @@ ILP32_UNSUPPORTED = {
         name: 'an i64 atomic needs a double-word atomic the backend does not emit'
         for name in ('atomic_cmpxchg', 'atomic_orderings', 'atomics')
     },
-    'thread_local_storage': 'thread-local storage is not implemented by this backend',
     'vector_operations': 'this backend has no vector unit',
 }
 
@@ -72,7 +71,6 @@ S390X_UNSUPPORTED = {
 # is compiled in place of `<name>.lamina` for that target and shares its expected
 # output; variant files are never run as testcases of their own.
 RISCV64_UNSUPPORTED = {
-    'thread_local_storage': 'thread-local storage is not implemented for RISC-V',
     'vector_operations': 'vectors need the V extension, which rv64imafd does not carry',
 }
 
