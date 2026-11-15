@@ -37,15 +37,6 @@ FLOAT_AGGREGATE_UNSUPPORTED = {
     )
 }
 
-# Every backend but x86_64 refuses these by name: a `callptr` carries no callee
-# signature, so an aggregate crossing one has no ABI classification to go by, and
-# a `va_list` handed to a function that is not itself variadic has no register
-# save area at that end.
-CALLPTR_AGGREGATE_UNSUPPORTED = {
-    'callptr_passes_aggregate': 'callptr carries no callee signature, so an aggregate cannot be classified across it',
-    'callptr_returns_aggregate': 'callptr carries no callee signature, so an aggregate cannot be classified across it',
-}
-
 # A target with 32-bit integer registers refuses, by name, every testcase whose
 # shape needs a wider register than it has or a facility its backend does not
 # implement. These are backend gaps, not wrong answers: the compile fails rather
@@ -53,33 +44,9 @@ CALLPTR_AGGREGATE_UNSUPPORTED = {
 # under test can clear.
 ILP32_UNSUPPORTED = {
     **{
-        name: 'a 128-bit integer takes four 32-bit registers, and only pairs are split'
-        for name in (
-            'copy_scalar_types',
-            'i128_abi',
-            'i128_arith',
-            'i128_array_heap',
-            'i128_bit_intrinsics',
-            'i128_conv',
-            'i128_float',
-            'i128_literal_call_arg_bug_test',
-            'i128_mem',
-        )
-    },
-    **{
         name: 'an i64 atomic needs a double-word atomic the backend does not emit'
         for name in ('atomic_cmpxchg', 'atomic_orderings', 'atomics')
     },
-    **{
-        name: 'callptr carries no callee signature, so a legalized pair cannot cross it as a named argument or a result'
-        for name in (
-            'callptr_float_literal',
-            'function_pointers',
-            'global_function_address',
-            'va_arg_mixed',
-        )
-    },
-    'checked_arithmetic': 'no backend reports the overflow of an i64 register pair as a whole',
     'thread_local_storage': 'thread-local storage is not implemented by this backend',
     'vector_operations': 'this backend has no vector unit',
     'zero_size_aggregates': 'an aggregate crossing a boundary holds at least one byte here',
@@ -88,8 +55,6 @@ ILP32_UNSUPPORTED = {
     # pair, but the caller passes an integer literal beyond the named parameters as a
     # single word, so `va_arg.i64` reads one word of it and one of the next.
     'va_list_forwarded': 'a variadic integer literal is passed as one word, and va_arg.i64 reads a pair',
-    **FLOAT_AGGREGATE_UNSUPPORTED,
-    **CALLPTR_AGGREGATE_UNSUPPORTED,
 }
 
 I686_UNSUPPORTED = {
@@ -101,6 +66,7 @@ I686_UNSUPPORTED = {
 ARMV7_UNSUPPORTED = {
     'load_store_alignment': 'armv7 memory instructions fault on an unaligned address',
     'inline_asm_rdtsc': 'rdtsc reads the x86 timestamp counter; armv7 reads the cycle counter only from a privileged mode',
+    **FLOAT_AGGREGATE_UNSUPPORTED,
     **ILP32_UNSUPPORTED,
 }
 
