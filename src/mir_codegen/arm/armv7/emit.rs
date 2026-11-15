@@ -1,6 +1,6 @@
 //! Instruction lowering for the armv7 backend.
 
-use crate::mir_codegen::common::unsupported_thread_local;
+use lamina_mir::TlsModel;
 use std::io::Write;
 
 use crate::{
@@ -126,8 +126,27 @@ pub(crate) fn emit_instruction<W: Write>(
         MirInst::SafePoint | MirInst::StackMap { .. } | MirInst::PatchPoint { .. } => {}
         MirInst::Unreachable => writeln!(w, "    udf #0")?,
 
-        MirInst::ThreadLocalAddr { .. } => {
-            return Err(unsupported_thread_local("armv7"));
+        MirInst::ThreadLocalAddr { dst, symbol, model } => {
+            if !matches!(model, TlsModel::LocalExec) {
+                return Err(unsupported(format!(
+                    "armv7 reaches a thread-local variable under the local exec model only; '{symbol}' asks for {model:?}"
+                )));
+            }
+            // `TPIDRURO` holds the thread pointer, and the offset from it comes from a
+            // word the linker fills, which sits in a pool the code branches over.
+            let pointer = scratch.alloc()?;
+            let offset = scratch.alloc()?;
+            writeln!(w, "    b 99f")?;
+            writeln!(w, "    .align 2")?;
+            writeln!(w, "98:")?;
+            writeln!(w, "    .word {symbol}(tpoff)")?;
+            writeln!(w, "99:")?;
+            writeln!(w, "    mrc p15, 0, {pointer}, c13, c0, 3")?;
+            writeln!(w, "    ldr {offset}, 98b")?;
+            writeln!(w, "    add {pointer}, {pointer}, {offset}")?;
+            store_result(w, dst, pointer, ctx.frame)?;
+            scratch.free(offset);
+            scratch.free(pointer);
         }
         MirInst::IntOverflow {
             op,

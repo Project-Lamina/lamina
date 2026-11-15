@@ -17,9 +17,7 @@ mod overflow;
 mod tests;
 mod variadic;
 
-use crate::mir_codegen::common::{
-    reject_thread_local_globals, reject_underaligned_accesses_wider_than,
-};
+use crate::mir_codegen::common::reject_underaligned_accesses_wider_than;
 use std::{collections::HashMap, io::Write, sync::Arc};
 
 use crate::{
@@ -372,16 +370,17 @@ fn compile_function(
 
 /// `@` starts a comment in ARM assembly, so an ELF section type is spelled with `%`.
 pub(crate) fn arm_section_types(assembly: Vec<u8>) -> Vec<u8> {
-    let needle = b",\"ax\",@progbits";
     let mut out = assembly;
-    let mut at = 0;
-    while let Some(found) = out[at..]
-        .windows(needle.len())
-        .position(|window| window == needle)
-    {
-        let sigil = at + found + needle.len() - "@progbits".len();
-        out[sigil] = b'%';
-        at = sigil;
+    for needle in [b"\",@progbits".as_slice(), b"\",@nobits".as_slice()] {
+        let mut at = 0;
+        while let Some(found) = out[at..]
+            .windows(needle.len())
+            .position(|window| window == needle)
+        {
+            let sigil = at + found + 2;
+            out[sigil] = b'%';
+            at = sigil;
+        }
     }
     out
 }
@@ -432,7 +431,6 @@ pub fn generate_mir_armv7_with_units_and_settings<W: Write>(
     codegen_units: usize,
     settings: &MirCodegenSettings,
 ) -> Result<(), LaminaError> {
-    reject_thread_local_globals(module, "armv7")?;
     // ARMv7-A loads and stores a byte, halfword or word at any address while the
     // alignment check is off, which is how Linux runs. Anything wider goes through
     // `ldrd` or a VFP instruction, which still fault.
@@ -497,9 +495,11 @@ pub fn generate_mir_armv7_with_units_and_settings<W: Write>(
     for result in results {
         writer.write_all(&arm_section_types(result.assembly))?;
     }
-    emit_global_data(writer, module, target_os, |name| {
+    let mut globals = Vec::new();
+    emit_global_data(&mut globals, module, target_os, |name| {
         armv7.mangle_function_name(name)
     })?;
+    writer.write_all(&arm_section_types(globals))?;
     // `@` starts a comment in ARM assembly, so the note's type is spelled with `%`.
     writeln!(writer, ".section .note.GNU-stack,\"\",%progbits")?;
     Ok(())

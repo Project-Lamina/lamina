@@ -529,9 +529,11 @@ pub fn generate_mir_cortexm_with_units_and_settings<W: Write>(
     for result in results {
         writer.write_all(&arm_section_types(result.assembly))?;
     }
-    emit_global_data(writer, module, target_os, |name| {
+    let mut globals = Vec::new();
+    emit_global_data(&mut globals, module, target_os, |name| {
         cortexm.mangle_function_name(name)
     })?;
+    writer.write_all(&arm_section_types(globals))?;
     // `@` starts a comment in ARM assembly, so the note's type is spelled with `%`.
     writeln!(writer, ".section .note.GNU-stack,\"\",%progbits")?;
     Ok(())
