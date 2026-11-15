@@ -29,7 +29,6 @@ use crate::mir_codegen::common::{
     emit_symbol_visibility, external_names, integer_conversion_with_width, lamina_to_codegen_error,
     parallel_codegen_error,
 };
-use crate::mir_codegen::common::{reject_thread_local_globals, unsupported_thread_local};
 use crate::{
     error::LaminaError,
     mir::{
@@ -45,6 +44,7 @@ use crate::{
 use abi::{INCOMING_BASE, PTR, WORD};
 use lamina_codegen::abi::common_call_stub;
 use lamina_mir::SourceLoc;
+use lamina_mir::TlsModel;
 use lamina_platform::{PointerWidth, TargetArchitecture, TargetOperatingSystem};
 use operand::{
     EAX, ECX, EDX, Slots, byte_reg, is_single, load_operand, pop_float, push_float, slot,
@@ -237,7 +237,6 @@ pub fn generate_mir_i686_with_units_and_settings<W: Write>(
     codegen_units: usize,
     settings: &MirCodegenSettings,
 ) -> Result<(), LaminaError> {
-    reject_thread_local_globals(module, "i686")?;
     if target_os != TargetOperatingSystem::Linux {
         return Err(unsupported(format!(
             "i686 code generation supports Linux only, not {target_os}"
@@ -635,8 +634,21 @@ fn emit_instruction<W: Write>(
         | MirInst::Bitcast {
             to: ty, dst, src, ..
         } => emit_copy(ty, dst, src, writer, slots)?,
-        MirInst::ThreadLocalAddr { .. } => {
-            return Err(unsupported_thread_local("i686"));
+        MirInst::ThreadLocalAddr { dst, symbol, model } => {
+            // `%gs:0` holds the thread pointer. Local exec folds the offset into the
+            // instruction; initial exec reads it from the GOT entry the linker builds.
+            match model {
+                TlsModel::LocalExec => {
+                    writeln!(writer, "    movl %gs:0, {EAX}")?;
+                    writeln!(writer, "    leal {symbol}@NTPOFF({EAX}), {EAX}")?;
+                }
+                TlsModel::InitialExec => {
+                    writeln!(writer, "    movl {symbol}@INDNTPOFF, {ECX}")?;
+                    writeln!(writer, "    movl %gs:0, {EAX}")?;
+                    writeln!(writer, "    addl {ECX}, {EAX}")?;
+                }
+            }
+            store_register(EAX, dst, writer, slots)?;
         }
         MirInst::IntOverflow {
             op,
