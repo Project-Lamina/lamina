@@ -1210,8 +1210,8 @@ frame main 16
 frame print_digits 32
 
 [copy_scalar_types O0]
-insns 298
-spills 140
+insns 297
+spills 139
 calls 9
 branches 7
 frame main 432
@@ -1228,7 +1228,7 @@ frame print_i64 16
 frame put_u64 16
 
 [copy_scalar_types O2]
-insns 420
+insns 418
 spills 27
 calls 8
 branches 19
@@ -1236,11 +1236,11 @@ frame main 48
 frame put_u64 16
 
 [copy_scalar_types O3]
-insns 426
-spills 33
+insns 423
+spills 31
 calls 8
 branches 19
-frame main 64
+frame main 48
 frame put_u64 16
 
 [dealloc_stack_vs_heap_bug_test O0]
@@ -3734,8 +3734,8 @@ branches 0
 frame main 16
 
 [i128_abi O0]
-insns 2405
-spills 1475
+insns 2409
+spills 1479
 calls 18
 branches 3
 frame main 1776
@@ -3764,7 +3764,7 @@ frame split 240
 frame tail 96
 
 [i128_abi O2]
-insns 1361
+insns 1357
 spills 151
 calls 17
 branches 21
@@ -3778,8 +3778,8 @@ frame split 128
 frame tail 80
 
 [i128_abi O3]
-insns 1367
-spills 155
+insns 1341
+spills 143
 calls 17
 branches 21
 frame main 336
@@ -3788,12 +3788,12 @@ frame mixed 128
 frame pad 80
 frame print_u64 16
 frame put_u64 16
-frame split 176
+frame split 128
 frame tail 80
 
 [i128_arith O0]
-insns 64804
-spills 34212
+insns 64043
+spills 33465
 calls 3241
 branches 4
 frame case0 144
@@ -4980,7 +4980,7 @@ frame print_u64 16
 frame put_u64 48
 
 [i128_arith O1]
-insns 36620
+insns 36613
 spills 5616
 calls 3241
 branches 3
@@ -8544,8 +8544,8 @@ frame print_u64 16
 frame put_u64 16
 
 [i128_array_heap O0]
-insns 324
-spills 165
+insns 323
+spills 164
 calls 9
 branches 3
 frame main 544
@@ -8582,11 +8582,11 @@ frame print_u64 16
 frame put_u64 16
 
 [i128_bit_intrinsics O0]
-insns 24573
-spills 14554
+insns 23847
+spills 14178
 calls 298
 branches 4
-frame main 3472
+frame main 1616
 frame mk_i128 224
 frame mk_u128 224
 frame print_i64 64
@@ -8596,11 +8596,11 @@ frame show_i 176
 frame show_u 160
 
 [i128_bit_intrinsics O1]
-insns 11967
-spills 396
+insns 11513
+spills 298
 calls 298
 branches 4
-frame main 992
+frame main 608
 frame mk_i128 16
 frame mk_u128 16
 frame print_i64 16
@@ -8610,11 +8610,11 @@ frame show_i 48
 frame show_u 48
 
 [i128_bit_intrinsics O2]
-insns 11678
-spills 391
+insns 11273
+spills 293
 calls 296
 branches 6
-frame main 992
+frame main 608
 frame mk_i128 16
 frame mk_u128 16
 frame put_u64 16
@@ -8622,11 +8622,11 @@ frame show_i 48
 frame show_u 32
 
 [i128_bit_intrinsics O3]
-insns 12326
-spills 1346
+insns 11653
+spills 1150
 calls 296
 branches 6
-frame main 128
+frame main 3440
 frame mk_i128 16
 frame mk_u128 16
 frame put_u64 16
@@ -8634,8 +8634,8 @@ frame show_i 48
 frame show_u 32
 
 [i128_conv O0]
-insns 10397
-spills 6135
+insns 10259
+spills 5997
 calls 417
 branches 3
 frame case0 176
@@ -9172,8 +9172,8 @@ frame print_u64 16
 frame put_u64 16
 
 [i128_float O0]
-insns 3467
-spills 1945
+insns 3434
+spills 1912
 calls 162
 branches 3
 frame case0 256
@@ -9384,8 +9384,8 @@ frame print_u64 16
 frame put_u64 16
 
 [i128_mem O0]
-insns 879
-spills 498
+insns 875
+spills 494
 calls 17
 branches 5
 frame loop_sum 352
@@ -9507,6 +9507,18 @@ branches 1
 frame clobber 16
 frame main 16
 
+[inline_asm_clobber.riscv64_linux O0]
+status compile-failed
+
+[inline_asm_clobber.riscv64_linux O1]
+status compile-failed
+
+[inline_asm_clobber.riscv64_linux O2]
+status compile-failed
+
+[inline_asm_clobber.riscv64_linux O3]
+status compile-failed
+
 [inline_asm_loop O0]
 insns 107
 spills 24
@@ -9534,6 +9546,18 @@ spills 8
 calls 0
 branches 2
 frame main 16
+
+[inline_asm_loop.riscv64_linux O0]
+status compile-failed
+
+[inline_asm_loop.riscv64_linux O1]
+status compile-failed
+
+[inline_asm_loop.riscv64_linux O2]
+status compile-failed
+
+[inline_asm_loop.riscv64_linux O3]
+status compile-failed
 
 [inline_asm_pressure O0]
 insns 123
@@ -9563,6 +9587,18 @@ calls 0
 branches 2
 frame main 16
 
+[inline_asm_pressure.riscv64_linux O0]
+status compile-failed
+
+[inline_asm_pressure.riscv64_linux O1]
+status compile-failed
+
+[inline_asm_pressure.riscv64_linux O2]
+status compile-failed
+
+[inline_asm_pressure.riscv64_linux O3]
+status compile-failed
+
 [inline_asm_rdtsc O0]
 insns 92
 spills 15
@@ -9591,6 +9627,18 @@ calls 0
 branches 1
 frame main 16
 
+[inline_asm_rdtsc.riscv64_linux O0]
+status compile-failed
+
+[inline_asm_rdtsc.riscv64_linux O1]
+status compile-failed
+
+[inline_asm_rdtsc.riscv64_linux O2]
+status compile-failed
+
+[inline_asm_rdtsc.riscv64_linux O3]
+status compile-failed
+
 [inline_asm_unused O0]
 insns 93
 spills 17
@@ -9618,6 +9666,18 @@ spills 8
 calls 0
 branches 1
 frame main 16
+
+[inline_asm_unused.riscv64_linux O0]
+status compile-failed
+
+[inline_asm_unused.riscv64_linux O1]
+status compile-failed
+
+[inline_asm_unused.riscv64_linux O2]
+status compile-failed
+
+[inline_asm_unused.riscv64_linux O3]
+status compile-failed
 
 [inttofp_signed O0]
 insns 841
