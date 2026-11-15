@@ -1303,12 +1303,10 @@ fn touches_wide(
             module.functions.get(func_name).is_some_and(|callee| {
                 is_wide_type(&callee.signature.return_type, int64_regs)
                     || callee.signature.params.iter().any(|p| is_wide_type(&p.ty, int64_regs))
-            }) || args
-                .iter()
-                .any(|(ty, arg)| {
-                    ty.as_ref().is_some_and(|ty| is_wide_type(ty, int64_regs))
-                        || is_wide_value(arg, vars, int64_regs)
-                })
+            }) || args.iter().any(|(ty, arg)| {
+                ty.as_ref().is_some_and(|ty| is_wide_type(ty, int64_regs))
+                    || is_wide_value(arg, vars, int64_regs)
+            })
         }
         IRInst::Write { .. }
         | IRInst::Read { .. }
@@ -1620,6 +1618,15 @@ pub(super) fn lower_instruction<'a>(
             let mut mir_args = Vec::with_capacity(args.len());
             for (index, (ty, arg)) in args.iter().enumerate() {
                 let declared = callee.and_then(|f| f.signature.params.get(index));
+                let no_bytes = match declared {
+                    Some(param) => zero_sized(&param.ty, cx.module, cx.layout),
+                    None => ty
+                        .as_ref()
+                        .is_some_and(|ty| zero_sized(ty, cx.module, cx.layout)),
+                };
+                if no_bytes {
+                    continue;
+                }
                 let param_wide = declared.is_some_and(|p| is_wide_type(&p.ty, cx.int64_regs));
                 let stated_wide = ty
                     .as_ref()
@@ -1657,12 +1664,20 @@ pub(super) fn lower_instruction<'a>(
                 if callee.is_none() {
                     return Err(FromIRError::UnsupportedInstruction);
                 }
-                let ret = result.map(|r| resolve_or_alloc(r, cx.vregs, cx.vars));
+                let zero_return = callee
+                    .is_some_and(|f| zero_sized(&f.signature.return_type, cx.module, cx.layout));
+                let ret = result
+                    .filter(|_| !zero_return)
+                    .map(|r| resolve_or_alloc(r, cx.vregs, cx.vars));
                 cx.out.push(Instruction::Call {
                     name: (*func_name).to_string(),
                     args: mir_args,
                     ret,
                 });
+                if let Some(name) = result.filter(|_| zero_return) {
+                    let dst = resolve_or_alloc(name, cx.vregs, cx.vars);
+                    cx.out.push(zero_sized_address(dst, cx.vregs));
+                }
             }
         }
         IRInst::CallIndirect {
@@ -1787,6 +1802,10 @@ pub(super) fn lower_instruction<'a>(
                 ret_aggregate,
                 arg_aggregates,
             });
+            if let Some(name) = result.filter(|_| zero_return) {
+                let dst = resolve_or_alloc(name, cx.vregs, cx.vars);
+                cx.out.push(zero_sized_address(dst, cx.vregs));
+            }
             if let Some((slot, returned, name)) = after {
                 match returned {
                     Some(count) => {
