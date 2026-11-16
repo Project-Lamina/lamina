@@ -9,6 +9,7 @@ pub mod executor;
 #[cfg(feature = "encoder")]
 pub mod macro_helpers;
 pub mod sandbox;
+mod wide_refusal;
 
 pub use compiler::RuntimeCompiler;
 pub use executor::execute_jit_function;
@@ -278,26 +279,14 @@ pub fn compile_to_runtime(
 ///
 /// Lamina lowers i128 and u128 to pairs of 64-bit words, and the JIT has no encoding of
 /// its own that matches the AOT backends' results for them, so the whole module falls back
-/// to AOT. The check reads the parsed IR, where those types still exist; MIR has no
-/// marker for them.
-pub(crate) fn wide_integer_refusal<T: std::fmt::Debug>(module: &T) -> Option<String> {
-    let text = format!("{module:?}");
-    let ident = |c: char| c.is_alphanumeric() || c == '_';
-    ["I128", "U128"]
-        .into_iter()
-        .find(|token| {
-            text.match_indices(token).any(|(at, _)| {
-                let before = text[..at].chars().next_back();
-                let after = text[at + token.len()..].chars().next();
-                !before.is_some_and(ident) && !after.is_some_and(ident)
-            })
-        })
-        .map(|token| {
-            format!(
-                "--jit does not run modules that use {} values: the JIT cannot match the AOT result for them",
-                token.to_ascii_lowercase()
-            )
-        })
+/// to AOT. The walk reads the parsed IR, where those types still exist; MIR has no marker
+/// for them.
+pub(crate) fn wide_integer_refusal(module: &lamina_ir::module::Module<'_>) -> Option<String> {
+    wide_refusal::first_wide_integer(module).map(|token| {
+        format!(
+            "--jit does not run modules that use {token} values: the JIT cannot match the AOT result for them"
+        )
+    })
 }
 
 #[cfg(test)]
@@ -865,5 +854,24 @@ mod wide_refusal_tests {
         )
         .expect("parse");
         assert_eq!(wide_integer_refusal(&narrow), None);
+    }
+
+    #[test]
+    fn a_wide_integer_only_inside_a_struct_field_is_refused() {
+        let module = parse_module(
+            "type !Pair = struct { a: i64, b: i128 }\nfn @main() -> i32 {\nentry:\n  ret.i32 0\n}\n",
+        )
+        .expect("parse");
+        let refusal = wide_integer_refusal(&module).expect("a field of i128 must be refused");
+        assert!(refusal.contains("i128"), "{refusal}");
+    }
+
+    #[test]
+    fn a_wide_integer_global_type_is_refused() {
+        let module =
+            parse_module("global $big: u128 = 0\nfn @main() -> i32 {\nentry:\n  ret.i32 0\n}\n")
+                .expect("parse");
+        let refusal = wide_integer_refusal(&module).expect("a global of u128 must be refused");
+        assert!(refusal.contains("u128"), "{refusal}");
     }
 }
