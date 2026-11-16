@@ -230,6 +230,7 @@ impl ArchSpec {
             TargetEnvironment::Eabi => self.interpreters.gnu_soft_float,
             TargetEnvironment::Musl => self.interpreters.musl,
             TargetEnvironment::Lamina => self.interpreters.lamina,
+            TargetEnvironment::Msvc | TargetEnvironment::GnuLlvm => None,
             TargetEnvironment::Freestanding => None,
         }
     }
@@ -242,6 +243,7 @@ impl ArchSpec {
             }
             TargetEnvironment::Musl => self.toolchain.musl,
             TargetEnvironment::Lamina => self.toolchain.lamina,
+            TargetEnvironment::Msvc | TargetEnvironment::GnuLlvm => None,
             TargetEnvironment::Freestanding => self.toolchain.gnu,
         }
     }
@@ -380,7 +382,7 @@ arch_table! {
         float_aggregates: SysV,
         output_artifact: Executable,
         hosted_environment: Gnu,
-        environments: [Gnu, Musl, Lamina],
+        environments: [Gnu, Musl, Lamina, Msvc, GnuLlvm],
         interpreters: {
             gnu: Some("/lib64/ld-linux-x86-64.so.2"),
             gnu_soft_float: None,
@@ -411,7 +413,7 @@ arch_table! {
         float_aggregates: Aapcs64,
         output_artifact: Executable,
         hosted_environment: Gnu,
-        environments: [Gnu, Musl, Lamina],
+        environments: [Gnu, Musl, Lamina, Msvc, GnuLlvm],
         interpreters: {
             gnu: Some("/lib/ld-linux-aarch64.so.1"),
             gnu_soft_float: None,

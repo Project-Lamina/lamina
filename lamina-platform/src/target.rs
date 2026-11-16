@@ -14,7 +14,7 @@ use crate::arch_variant::{
 };
 use crate::cpu_level::X86CpuLevel;
 use crate::detection::{detect_host_architecture_only, detect_host_os};
-use crate::environment::TargetEnvironment;
+use crate::environment::{Libc, TargetEnvironment};
 
 pub use crate::arch_table::TargetArchitecture;
 
@@ -84,15 +84,23 @@ impl Target {
         self
     }
 
-    /// Select an environment the architecture accepts.
+    /// Select an environment the architecture accepts on this operating system.
     pub fn with_environment(mut self, environment: TargetEnvironment) -> Result<Self, String> {
         let spec = self.architecture.spec();
+        if environment.is_windows_only() && self.operating_system != TargetOperatingSystem::Windows
+        {
+            return Err(format!(
+                "Environment '{environment}' is only defined for Windows targets, not {}\n  Hint: write {}_windows_{environment} for the Windows {environment} environment",
+                self.operating_system,
+                self.arch_token()
+            ));
+        }
         if !spec.accepts_environment(environment) {
             return Err(format!(
                 "Environment '{environment}' is not supported for {}\n  Hint: {} accepts {}",
                 spec.token,
                 spec.token,
-                accepted_environments(&spec)
+                accepted_environments(&spec, self.operating_system)
             ));
         }
         self.environment = environment;
@@ -198,8 +206,23 @@ impl Target {
         }
     }
 
+    /// The C library this target links, or `None` when it links none.
+    ///
+    /// On Windows the environment names the C runtime itself: `gnu` is mingw-w64 with GCC,
+    /// where on Linux it is glibc. Every other mapping is the environment's own.
+    pub fn libc(&self) -> Option<Libc> {
+        match (self.operating_system, self.environment) {
+            (TargetOperatingSystem::Windows, TargetEnvironment::Gnu) => Some(Libc::MinGw),
+            _ => self.environment.libc(),
+        }
+    }
+
     /// The ELF interpreter this target's environment asks for, if it asks for one.
+    /// Windows has no ELF interpreter whatever the environment.
     pub fn interpreter(&self) -> Option<&'static str> {
+        if self.operating_system == TargetOperatingSystem::Windows {
+            return None;
+        }
         self.spec().interpreter(self.environment)
     }
 
@@ -242,10 +265,13 @@ impl Target {
     }
 }
 
-fn accepted_environments(spec: &ArchSpec) -> String {
+fn accepted_environments(spec: &ArchSpec, operating_system: TargetOperatingSystem) -> String {
     let mut names: Vec<&str> = spec
         .environments
         .iter()
+        .filter(|environment| {
+            !environment.is_windows_only() || operating_system == TargetOperatingSystem::Windows
+        })
         .map(|environment| environment.token())
         .collect();
     names.push(TargetEnvironment::Freestanding.token());
@@ -1206,6 +1232,89 @@ mod tests {
                 listed_architectures.contains(&arch),
                 "{arch} target list disagrees with the advertised targets"
             );
+        }
+    }
+
+    #[test]
+    fn windows_environments_parse_and_print_back() {
+        for (name, environment) in [
+            ("x86_64_windows_msvc", TargetEnvironment::Msvc),
+            ("x86_64_windows_gnu", TargetEnvironment::Gnu),
+            ("x86_64_windows_gnullvm", TargetEnvironment::GnuLlvm),
+            ("aarch64_windows_msvc", TargetEnvironment::Msvc),
+            ("aarch64_windows_gnu", TargetEnvironment::Gnu),
+            ("aarch64_windows_gnullvm", TargetEnvironment::GnuLlvm),
+        ] {
+            let target: Target = name.parse().expect(name);
+            assert_eq!(
+                target.operating_system,
+                TargetOperatingSystem::Windows,
+                "{name}"
+            );
+            assert_eq!(target.environment, environment, "{name}");
+            assert_eq!(target.to_string(), name, "{name}");
+        }
+    }
+
+    #[test]
+    fn a_bare_windows_target_keeps_the_freestanding_default() {
+        let target: Target = "x86_64_windows".parse().unwrap();
+        assert_eq!(target.environment, TargetEnvironment::Freestanding);
+        assert_eq!(target.libc(), None);
+        assert_eq!(target.to_string(), "x86_64_windows");
+        assert_eq!(
+            target,
+            Target::new(TargetArchitecture::X86_64, TargetOperatingSystem::Windows)
+        );
+    }
+
+    #[test]
+    fn windows_environments_name_their_c_runtime() {
+        let libc = |name: &str| name.parse::<Target>().unwrap().libc();
+        assert_eq!(libc("x86_64_windows_msvc"), Some(Libc::Ucrt));
+        assert_eq!(libc("x86_64_windows_gnu"), Some(Libc::MinGw));
+        assert_eq!(libc("x86_64_windows_gnullvm"), Some(Libc::MinGw));
+        assert_eq!(libc("aarch64_windows_gnu"), Some(Libc::MinGw));
+        assert_eq!(libc("x86_64_linux"), Some(Libc::Glibc));
+        assert_eq!(libc("x86_64_linux_musl"), Some(Libc::Musl));
+    }
+
+    #[test]
+    fn a_windows_target_has_no_elf_interpreter() {
+        for name in [
+            "x86_64_windows_gnu",
+            "x86_64_windows_msvc",
+            "aarch64_windows_gnullvm",
+        ] {
+            assert_eq!(
+                name.parse::<Target>().unwrap().interpreter(),
+                None,
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn msvc_and_gnullvm_are_refused_by_name_off_windows() {
+        for name in [
+            "x86_64_linux_msvc",
+            "aarch64_macos_gnullvm",
+            "x86_64_freebsd_msvc",
+        ] {
+            let error = Target::from_str(name).expect_err(name);
+            assert!(
+                error.contains("only defined for Windows"),
+                "{name}: {error}"
+            );
+            assert!(error.contains("_windows_"), "{name}: {error}");
+        }
+    }
+
+    #[test]
+    fn an_architecture_without_windows_environments_refuses_them() {
+        for name in ["s390x_windows_msvc", "riscv64_windows_gnullvm"] {
+            let error = Target::from_str(name).expect_err(name);
+            assert!(error.contains("not supported"), "{name}: {error}");
         }
     }
 }

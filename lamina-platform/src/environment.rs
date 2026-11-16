@@ -15,6 +15,11 @@ pub enum Libc {
     /// Lamina's own C library. The name is reserved and the plumbing is in place; no
     /// implementation exists yet, so [`Libc::is_implemented`] answers `false` for it.
     Lamina,
+    /// The Microsoft C runtime (ucrt, with the static vcruntime and libcmt), linked by
+    /// `link.exe` from a Visual Studio installation.
+    Ucrt,
+    /// The mingw-w64 C runtime, linked by GCC or LLVM for a Windows target.
+    MinGw,
 }
 
 impl Libc {
@@ -24,6 +29,8 @@ impl Libc {
             Self::Glibc => "gnu",
             Self::Musl => "musl",
             Self::Lamina => "lamina",
+            Self::Ucrt => "msvc",
+            Self::MinGw => "gnu",
         }
     }
 
@@ -33,17 +40,20 @@ impl Libc {
     /// taking another C library's interpreter, start-up objects and symbols instead.
     pub const fn is_implemented(self) -> bool {
         match self {
-            Self::Glibc | Self::Musl => true,
-            Self::Lamina => false,
+            Self::Glibc | Self::Musl | Self::Ucrt => true,
+            Self::Lamina | Self::MinGw => false,
         }
     }
 
     /// Why this C library cannot be linked, for a diagnostic, or `None` when it can.
     pub const fn unavailable_reason(self) -> Option<&'static str> {
         match self {
-            Self::Glibc | Self::Musl => None,
+            Self::Glibc | Self::Musl | Self::Ucrt => None,
             Self::Lamina => Some(
                 "the Lamina C library is not implemented yet: there is no Lamina libc to link, no start-up objects and no dynamic loader for it",
+            ),
+            Self::MinGw => Some(
+                "the mingw-w64 C runtime is not implemented yet: lamina has no mingw-w64 start-up objects, import libraries or link line for it",
             ),
         }
     }
@@ -55,6 +65,8 @@ impl fmt::Display for Libc {
             Self::Glibc => "glibc",
             Self::Musl => "musl",
             Self::Lamina => "lamina",
+            Self::Ucrt => "ucrt",
+            Self::MinGw => "mingw-w64",
         };
         write!(f, "{s}")
     }
@@ -77,7 +89,8 @@ pub enum CompilerRuntime {
 /// The C runtime and ABI a target means.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TargetEnvironment {
-    /// glibc, with the architecture's own floating-point ABI.
+    /// glibc, with the architecture's own floating-point ABI. On Windows the same
+    /// spelling names MinGW-w64 with GCC, which [`crate::Target::libc`] reflects.
     Gnu,
     /// musl libc.
     Musl,
@@ -87,6 +100,11 @@ pub enum TargetEnvironment {
     /// Lamina libc has been written. Every environment-derived property that would name
     /// a file answers `None` for it, and a link refuses by name.
     Lamina,
+    /// The Microsoft C runtime on Windows. The Windows environment spelled `msvc`.
+    Msvc,
+    /// MinGW-w64 with LLVM on Windows, spelled `gnullvm`. A mingw-w64 C runtime, as
+    /// [`TargetEnvironment::Gnu`] is on Windows, with LLVM in place of GCC.
+    GnuLlvm,
     /// ARM EABI with the soft-float calling convention.
     Eabi,
     /// ARM EABI with the hard-float calling convention: floats in VFP registers.
@@ -98,10 +116,12 @@ pub enum TargetEnvironment {
 
 impl TargetEnvironment {
     /// Every environment a target string may name, in the order the diagnostics list them.
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 8] = [
         Self::Gnu,
         Self::Musl,
         Self::Lamina,
+        Self::Msvc,
+        Self::GnuLlvm,
         Self::Eabi,
         Self::Eabihf,
         Self::Freestanding,
@@ -113,10 +133,17 @@ impl TargetEnvironment {
             Self::Gnu => "gnu",
             Self::Musl => "musl",
             Self::Lamina => "lamina",
+            Self::Msvc => "msvc",
+            Self::GnuLlvm => "gnullvm",
             Self::Eabi => "eabi",
             Self::Eabihf => "eabihf",
             Self::Freestanding => "none",
         }
+    }
+
+    /// Whether this environment only means something on Windows.
+    pub const fn is_windows_only(self) -> bool {
+        matches!(self, Self::Msvc | Self::GnuLlvm)
     }
 
     /// The C library this environment links, or `None` when it links none.
@@ -125,6 +152,8 @@ impl TargetEnvironment {
             Self::Gnu | Self::Eabi | Self::Eabihf => Some(Libc::Glibc),
             Self::Musl => Some(Libc::Musl),
             Self::Lamina => Some(Libc::Lamina),
+            Self::Msvc => Some(Libc::Ucrt),
+            Self::GnuLlvm => Some(Libc::MinGw),
             Self::Freestanding => None,
         }
     }
@@ -132,9 +161,13 @@ impl TargetEnvironment {
     /// Where the 128-bit integer helpers and the other compiler-runtime symbols come from.
     pub const fn compiler_runtime(self) -> CompilerRuntime {
         match self {
-            Self::Gnu | Self::Musl | Self::Lamina | Self::Eabi | Self::Eabihf => {
-                CompilerRuntime::LaminaBuiltins
-            }
+            Self::Gnu
+            | Self::Musl
+            | Self::Lamina
+            | Self::Msvc
+            | Self::GnuLlvm
+            | Self::Eabi
+            | Self::Eabihf => CompilerRuntime::LaminaBuiltins,
             Self::Freestanding => CompilerRuntime::None,
         }
     }
@@ -143,7 +176,9 @@ impl TargetEnvironment {
     /// registers. This is the eabi/eabihf distinction on 32-bit ARM.
     pub const fn hardware_float(self) -> bool {
         match self {
-            Self::Gnu | Self::Musl | Self::Lamina | Self::Eabihf => true,
+            Self::Gnu | Self::Musl | Self::Lamina | Self::Msvc | Self::GnuLlvm | Self::Eabihf => {
+                true
+            }
             Self::Eabi | Self::Freestanding => false,
         }
     }
@@ -168,6 +203,8 @@ impl FromStr for TargetEnvironment {
             "gnu" => Ok(Self::Gnu),
             "musl" => Ok(Self::Musl),
             "lamina" => Ok(Self::Lamina),
+            "msvc" => Ok(Self::Msvc),
+            "gnullvm" => Ok(Self::GnuLlvm),
             "eabi" => Ok(Self::Eabi),
             "eabihf" => Ok(Self::Eabihf),
             "none" => Ok(Self::Freestanding),
@@ -267,5 +304,49 @@ mod tests {
         assert!(TargetEnvironment::Eabihf.hardware_float());
         assert!(TargetEnvironment::Gnu.hardware_float());
         assert!(TargetEnvironment::Musl.hardware_float());
+    }
+
+    #[test]
+    fn the_windows_environments_are_the_only_ones_for_windows_alone() {
+        assert!(TargetEnvironment::Msvc.is_windows_only());
+        assert!(TargetEnvironment::GnuLlvm.is_windows_only());
+        assert!(!TargetEnvironment::Gnu.is_windows_only());
+        assert!(!TargetEnvironment::Freestanding.is_windows_only());
+        assert_eq!(TargetEnvironment::Msvc.token(), "msvc");
+        assert_eq!(TargetEnvironment::GnuLlvm.token(), "gnullvm");
+    }
+
+    #[test]
+    fn msvc_names_the_ucrt_and_gnullvm_names_mingw() {
+        assert_eq!(TargetEnvironment::Msvc.libc(), Some(Libc::Ucrt));
+        assert_eq!(TargetEnvironment::GnuLlvm.libc(), Some(Libc::MinGw));
+        assert_eq!(Libc::Ucrt.triple_component(), "msvc");
+        assert_eq!(Libc::MinGw.triple_component(), "gnu");
+        assert_eq!(Libc::Ucrt.to_string(), "ucrt");
+        assert_eq!(Libc::MinGw.to_string(), "mingw-w64");
+    }
+
+    #[test]
+    fn the_ucrt_is_linked_and_the_mingw_runtime_is_named_as_unimplemented() {
+        assert!(Libc::Ucrt.is_implemented());
+        assert_eq!(Libc::Ucrt.unavailable_reason(), None);
+        assert!(!Libc::MinGw.is_implemented());
+        let reason = Libc::MinGw
+            .unavailable_reason()
+            .expect("the mingw-w64 runtime states why it is not linked");
+        assert!(reason.contains("mingw-w64"), "{reason}");
+    }
+
+    #[test]
+    fn the_windows_environments_are_hosted_and_use_our_own_compiler_runtime() {
+        for environment in [TargetEnvironment::Msvc, TargetEnvironment::GnuLlvm] {
+            assert!(environment.is_hosted(), "{environment}");
+            assert_eq!(
+                environment.compiler_runtime(),
+                CompilerRuntime::LaminaBuiltins,
+                "{environment}"
+            );
+            assert!(environment.hardware_float(), "{environment}");
+        }
     }
 }
