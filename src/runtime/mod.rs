@@ -28,7 +28,6 @@ use lamina_platform::{TargetArchitecture, TargetOperatingSystem};
 
 // Re-export ras types for convenience
 #[cfg(feature = "encoder")]
-use ras::assembler::RasAssembler;
 pub use ras::{ExecutableMemory, RasRuntime};
 
 /// Runtime compilation result
@@ -59,16 +58,11 @@ pub fn compile_to_runtime(
         // Keep JIT output quiet by default (release-friendly). Enable with `LAMINA_JIT_DEBUG=1`.
         let jit_debug = env::var_os("LAMINA_JIT_DEBUG").is_some();
 
-        let mut assembler = RasAssembler::new(_target_arch, _target_os).map_err(|e| {
-            LaminaError::ValidationError(format!("Failed to create assembler: {e}"))
-        })?;
-
-        // Always compile all functions (needed for internal function calls)
-        let (code, function_offsets) = assembler
-            .compile_mir_to_binary_function(_module, None)
-            .map_err(|e| {
-                LaminaError::ValidationError(format!("Runtime compilation failed: {e}"))
-            })?;
+        // Always compile all functions (needed for internal function calls). The runtime
+        // also maps the module's globals and patches their load-time pointers.
+        let (memory, function_offsets) = RasRuntime::new(_target_arch, _target_os)
+            .compile_with_offsets(_module)
+            .map_err(|e| LaminaError::ValidationError(format!("Runtime compilation failed: {e}")))?;
 
         // Find the function offset for the requested function
         let function_offset = if let Some(name) = _function_name {
@@ -105,20 +99,6 @@ pub fn compile_to_runtime(
             Some(0)
         };
 
-        // Allocate writable memory
-        let mut memory = ExecutableMemory::allocate_writable(code.len())
-            .map_err(|e| LaminaError::ValidationError(format!("Memory allocation failed: {e}")))?;
-
-        // Write code
-        memory
-            .write_code(&code)
-            .map_err(|e| LaminaError::ValidationError(format!("Failed to write code: {e}")))?;
-
-        // Make executable
-        memory.make_executable().map_err(|e| {
-            LaminaError::ValidationError(format!("Failed to make memory executable: {e}"))
-        })?;
-
         // Get function pointer, adjusting for function offset if specified
         let base_ptr = memory.code_start();
         let function_ptr = if let Some(offset) = function_offset {
@@ -144,7 +124,7 @@ pub fn compile_to_runtime(
             {
                 if jit_debug {
                     unsafe {
-                        let remaining = code.len().saturating_sub(offset);
+                        let remaining = memory.capacity().saturating_sub(offset);
                         let bytes = slice::from_raw_parts(adjusted, min(128, remaining));
                         eprintln!(
                             "[JIT-DEBUG] First 32 bytes at function: {:02x?}",
