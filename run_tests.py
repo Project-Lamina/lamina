@@ -372,7 +372,7 @@ def run_program(argv, cwd, stdin_input=None, timeout=60, env=None):
         result.returncode,
     )
 
-def run_raw_output(argv, project_root):
+def run_raw_output(argv, project_root, env=None):
     """Run a binary whose stdout is compared byte for byte (write sends raw memory)."""
     try:
         result = subprocess.run(
@@ -381,6 +381,7 @@ def run_raw_output(argv, project_root):
             cwd=project_root,
             stdin=subprocess.DEVNULL,
             timeout=60,
+            env=env,
         )
     except Exception as e:
         return False, f"Execution failed: {str(e)}"
@@ -396,32 +397,42 @@ def run_raw_output(argv, project_root):
 # The JIT mode is x86_64 Linux only for now, and runs only these testcases.
 JIT_TESTCASES = {
     'aggregate_load_store.lamina', 'arithmetic.lamina',
-    'binary_op_rhs_in_destination.lamina', 'calling_convention_bug_test.lamina',
-    'capable_lamina.lamina', 'complex_arithmetic.lamina', 'conditionals.lamina',
-    'constants.lamina', 'copy_scalar_types.lamina',
+    'binary_op_rhs_in_destination.lamina', 'call_typed_arguments.lamina',
+    'calling_convention_bug_test.lamina', 'capable_lamina.lamina',
+    'checked_arithmetic.lamina', 'complex_arithmetic.lamina',
+    'conditionals.lamina', 'constants.lamina', 'copy_scalar_types.lamina',
     'dealloc_stack_vs_heap_bug_test.lamina', 'debug_printing.lamina',
     'div_by_constant.lamina', 'division_constant_divisors.lamina',
     'division_runtime_narrowing.lamina', 'division_small_types_bug_test.lamina',
     'edge_cases.lamina', 'edge_cases_bug_test.lamina',
     'edge_cases_extra.lamina', 'empty_struct_type.lamina',
-    'external_functions.lamina', 'f64_literal_width.lamina',
+    'extern_declarations.lamina', 'external_functions.lamina',
+    'f64_literal_width.lamina', 'float_exponent_literals.lamina',
     'float_nan_comparisons.lamina', 'float_phi_copy.lamina',
-    'floating_point_bug_test.lamina', 'floating_point_register_bug_test.lamina',
-    'fptoint_signed.lamina', 'function_annotations.lamina',
-    'function_call_isolation.lamina', 'function_placement_annotations.lamina',
-    'functions.lamina', 'gep_element_size_bug_test.lamina',
+    'float_width_conversions.lamina', 'floating_point_bug_test.lamina',
+    'floating_point_register_bug_test.lamina', 'fptoint_signed.lamina',
+    'function_annotations.lamina', 'function_call_isolation.lamina',
+    'function_placement_annotations.lamina', 'functions.lamina',
+    'gep_element_size_bug_test.lamina',
     'gep_element_size_comprehensive_bug_test.lamina',
     'gep_variable_indices.lamina', 'getfieldptr_offset_bug_test.lamina',
-    'getfieldptr_param_layout.lamina', 'heap_allocation_bug_test.lamina',
-    'heap_memory.lamina', 'heapfree_reassigned_heap.lamina',
-    'heapfree_reassigned_stack.lamina', 'hello_world.lamina',
-    'i128_array_heap.lamina', 'i128_conv.lamina', 'i8_signedness.lamina',
-    'inttofp_signed.lamina', 'io_basic.lamina', 'io_buffer.lamina',
-    'io_comprehensive.lamina', 'io_error_handling.lamina', 'io_pointer.lamina',
-    'io_write.lamina', 'lamina_demo.lamina', 'large_basic_block.lamina',
-    'large_constants.lamina', 'large_stack_frame.lamina',
-    'leaf_argument_registers.lamina', 'load_store_alignment.lamina',
-    'load_store_operations.lamina', 'load_store_optimization_bug_test.lamina',
+    'getfieldptr_param_layout.lamina', 'global_element_list.lamina',
+    'global_literal_fills_slot.lamina', 'global_nested_init.lamina',
+    'global_pointer_addend.lamina', 'global_pointer_fields.lamina',
+    'global_pointer_relocation.lamina', 'global_readonly_string.lamina',
+    'global_string.lamina', 'global_struct_init.lamina',
+    'globals_address.lamina', 'globals_export.lamina', 'globals_float.lamina',
+    'globals_int.lamina', 'globals_zero_init.lamina',
+    'heap_allocation_bug_test.lamina', 'heap_memory.lamina',
+    'heapfree_reassigned_heap.lamina', 'heapfree_reassigned_stack.lamina',
+    'hello_world.lamina', 'i128_array_heap.lamina', 'i128_conv.lamina',
+    'i8_signedness.lamina', 'inttofp_signed.lamina', 'io_basic.lamina',
+    'io_buffer.lamina', 'io_comprehensive.lamina', 'io_error_handling.lamina',
+    'io_pointer.lamina', 'io_types.lamina', 'io_write.lamina',
+    'lamina_demo.lamina', 'large_basic_block.lamina', 'large_constants.lamina',
+    'large_stack_frame.lamina', 'leaf_argument_registers.lamina',
+    'load_store_alignment.lamina', 'load_store_operations.lamina',
+    'load_store_optimization_bug_test.lamina',
     'loop_rotation_bound_change.lamina', 'loop_rotation_counted.lamina',
     'loop_rotation_header_call.lamina', 'loop_rotation_memory_test.lamina',
     'loop_rotation_multi_latch.lamina', 'loop_rotation_nested.lamina',
@@ -429,18 +440,20 @@ JIT_TESTCASES = {
     'memory_test.lamina', 'narrow_add_renormalizes.lamina',
     'narrow_store_width.lamina', 'narrow_unsigned_canonical.lamina',
     'negative_multiplier.lamina', 'neon_vectorized_loops.lamina',
-    'nested_calls.lamina', 'output_freestanding.lamina',
+    'nested_calls.lamina', 'odd_sized_global_addresses.lamina',
+    'output_freestanding.lamina', 'output_via_libc.lamina',
     'pointer_arithmetic_brainfuck.lamina',
     'pointer_from_literal_address.lamina', 'pointer_operations.lamina',
     'pointer_operations_comprehensive.lamina',
-    'pointer_operations_fixed.lamina', 'primitive_types_comprehensive.lamina',
-    'primitive_types_fixed.lamina', 'readbyte_nul.lamina',
+    'pointer_operations_fixed.lamina', 'pointer_param_store.lamina',
+    'primitive_types_comprehensive.lamina', 'primitive_types_fixed.lamina',
+    'print_float.lamina', 'print_unsigned.lamina', 'readbyte_nul.lamina',
     'reassign_cast_loop.lamina', 'reassign_float_unary_self.lamina',
     'recursion_with_calculation.lamina', 'recursive_factorial.lamina',
     'recursive_fibonacci.lamina', 'recursive_sum.lamina',
     'register_pressure.lamina', 'register_size_mismatch_bug_test.lamina',
     'select_all_types.lamina', 'simple_const.lamina', 'simple_heap_test.lamina',
-    'sroa_refusals.lamina', 'stack_allocation.lamina',
+    'sroa_refusals.lamina', 'stack_align.lamina', 'stack_allocation.lamina',
     'stack_frame_overflow_bug_test.lamina', 'stack_operations.lamina',
     'stack_overflow_test.lamina', 'stdin.lamina', 'stress_test.lamina',
     'struct_field_offset_bug_test.lamina',
@@ -449,8 +462,9 @@ JIT_TESTCASES = {
     'tail_stack_address.lamina', 'test_minimal.lamina', 'test_u8.lamina',
     'tiny.lamina', 'type_conversions.lamina',
     'type_conversions_comprehensive.lamina', 'type_conversions_fixed.lamina',
-    'unreachable_terminator.lamina', 'variables.lamina',
-    'void_tail_print.lamina', 'volatile_access.lamina',
+    'unary_ops.lamina', 'unreachable_terminator.lamina', 'variables.lamina',
+    'variadic_wide_argument.lamina', 'void_tail_print.lamina',
+    'volatile_access.lamina',
 }
 
 def jit_host_problem():
@@ -469,6 +483,9 @@ def compile_and_run_jit(test_path):
     test_path = Path(test_path)
     env = dict(os.environ, LAMINA_JIT_NO_FALLBACK='1')
     argv = ['cargo', 'run', '--release', '--quiet', '--', str(test_path), '--jit']
+    if test_path.name == 'io_types.lamina':
+        success, raw = run_raw_output(argv, project_root, env)
+        return (True, raw, '') if success else (False, raw, '')
     success, stdout, stderr, exit_code = run_program(
         argv, project_root, STDIN_INPUTS.get(test_path.name), 300, env
     )
