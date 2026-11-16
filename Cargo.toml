@@ -40,7 +40,7 @@ name = "weld"
 path = "src/bin/weld.rs"
 
 [dependencies]
-ras = { package = "lamina-ras", version = "0.2.5", features = ["encoder"] }
+ras = { package = "lamina-ras", version = "0.2.6", features = ["encoder"] }
 weld = { package = "lamina-weld", version = "0.2.3" }
 lamina-ir = { path = "lamina-ir", version = "0.2.2" }
 lamina-platform = { path = "lamina-platform", version = "0.2.2" }
@@ -72,5 +72,3 @@ nightly = [
 lamina-platform = { path = "lamina-platform" }
 lamina-mir = { path = "lamina-mir" }
 lamina-codegen = { path = "lamina-codegen" }
-# `.rva` for coff unwind records, until a ras release has it
-lamina-ras = { git = "https://github.com/Project-Lamina/ras", rev = "13aea46cf4e6ddf096c4d107259164072af4773d" }
