@@ -3251,6 +3251,56 @@ frame ptr 0
 frame ptr2 0
 frame second 0
 
+[global_readonly_string O0]
+insns 185
+spills 55
+calls 6
+branches 3
+frame greeting 0
+frame main 128
+frame print_i64 64
+frame print_u64 16
+frame put_u64 48
+frame squares 0
+frame zeros 0
+
+[global_readonly_string O1]
+insns 178
+spills 23
+calls 6
+branches 3
+frame greeting 0
+frame main 32
+frame print_i64 16
+frame print_u64 16
+frame put_u64 16
+frame squares 0
+frame zeros 0
+
+[global_readonly_string O2]
+insns 246
+spills 23
+calls 5
+branches 7
+frame greeting 0
+frame main 32
+frame print_u64 16
+frame put_u64 16
+frame squares 0
+frame zeros 0
+
+[global_readonly_string O3]
+insns 242
+spills 19
+calls 5
+branches 7
+frame greeting 0
+frame main 16
+frame print_u64 16
+frame put_u64 16
+frame squares 0
+frame zeros 0
+
 [global_string O0]
 insns 191
 spills 58
