@@ -31,6 +31,11 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+/// Exit status of `--jit` when `LAMINA_JIT_NO_FALLBACK` is set and in-memory compilation
+/// is refused. It is the status `git bisect run` reads as "skip this revision", which says
+/// the input could not be tested, and which a program is unlikely to return.
+pub const JIT_REFUSED_EXIT_CODE: i32 = 125;
+
 /// The function `--jit` runs: `@main`, or the module's only function.
 ///
 /// A module with neither is refused by name rather than run by map order.
@@ -189,7 +194,10 @@ pub fn handle_jit_compilation(
             Ok(result) => (Some(result), None),
             Err(err) => {
                 if env::var_os("LAMINA_JIT_NO_FALLBACK").is_some() {
-                    return Err(err);
+                    eprintln!(
+                        "--jit: in-memory compilation was refused, and LAMINA_JIT_NO_FALLBACK forbids the AOT fallback: {err}"
+                    );
+                    process::exit(JIT_REFUSED_EXIT_CODE);
                 }
                 if options.verbose {
                     eprintln!(
@@ -372,7 +380,7 @@ mod tests {
     use super::*;
     use crate::cli::options::CompileOptions;
     use crate::mir_codegen::MirCodegenSettings;
-    use std::path::Path;
+    use std::{fs::remove_file, path::Path};
 
     fn minimal_options() -> CompileOptions {
         CompileOptions {
@@ -449,6 +457,64 @@ entry:
         opts.target_arch = Some("invalid_target_xyz".to_owned());
         let result = handle_jit_compilation(SIMPLE_ADD_IR, Path::new("test.lir"), &opts);
         assert!(matches!(result, Err(LaminaError::ValidationError(_))));
+    }
+
+    const WIDE_MAIN_IR: &str = "fn @main() -> i128 {\nentry:\n    ret.i128 0\n}\n";
+    const ARGC_MAIN_IR: &str =
+        "fn @main(i32 %argc, ptr %argv) -> i32 {\nentry:\n    ret.i32 %argc\n}\n";
+    const SEVEN_MAIN_IR: &str = "fn @main() -> i32 {\nentry:\n    ret.i32 7\n}\n";
+
+    fn lamina_binary() -> std::path::PathBuf {
+        let binary = format!("lamina{}", env::consts::EXE_SUFFIX);
+        env::current_exe()
+            .expect("test executable")
+            .ancestors()
+            .map(|dir| dir.join(&binary))
+            .find(|candidate| candidate.is_file())
+            .expect("build the binary first: cargo build --bin lamina")
+    }
+
+    fn run_lamina_jit(
+        ir: &str,
+        name: &str,
+        trailing: &[&str],
+        no_fallback: bool,
+    ) -> process::Output {
+        let input = env::temp_dir().join(format!("lamina-jit-{name}-{}.lamina", process::id()));
+        write(&input, ir).expect("write the test module");
+        let mut command = Command::new(lamina_binary());
+        command.arg(&input).arg("--jit").args(trailing);
+        command.env_remove("LAMINA_JIT_NO_FALLBACK");
+        if no_fallback {
+            command.env("LAMINA_JIT_NO_FALLBACK", "1");
+        }
+        let output = command.output().expect("run lamina");
+        let _ = remove_file(&input);
+        output
+    }
+
+    #[test]
+    fn jit_refusal_under_no_fallback_exits_with_the_refusal_code() {
+        let output = run_lamina_jit(WIDE_MAIN_IR, "wide", &[], true);
+        assert_eq!(output.status.code(), Some(JIT_REFUSED_EXIT_CODE));
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("128"), "{stderr}");
+    }
+
+    #[test]
+    fn jit_refusal_under_no_fallback_exits_with_the_refusal_code() {
+        let output = run_lamina_jit(WIDE_MAIN_IR, "wide", &[], true);
+        assert_eq!(output.status.code(), Some(JIT_REFUSED_EXIT_CODE));
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("128"), "{stderr}");
+    }
+
+    #[test]
+    fn usage_text_documents_the_refusal_code() {
+        assert!(
+            crate::cli::options::usage_text().contains(&format!("exits {JIT_REFUSED_EXIT_CODE}")),
+            "the usage text must name the code the refusal exits with"
+        );
     }
 
     #[test]
