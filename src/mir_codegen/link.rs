@@ -605,14 +605,15 @@ fn build_weld_linker_args(
         args.push(interpreter.to_string());
     }
     match target_os {
-        _ if !hosted => {}
         TargetOperatingSystem::Windows => {
             // weld detects PE from .exe output suffix; no entry-point arg needed.
         }
         os if os_uses_macho(os) => {
-            // Mach-O: link against libSystem (contains printf, fflush, etc.)
+            // Darwin supplies its own C runtime, so the environment axis names no libc
+            // for it, and printf and fflush still come from libSystem.
             args.push("-lSystem".to_string());
         }
+        _ if !hosted => {}
         _ => {
             // Linux/BSD: link against libc for printf, fflush, etc.
             args.push("-lc".to_string());
