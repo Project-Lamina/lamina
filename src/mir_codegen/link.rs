@@ -1094,8 +1094,14 @@ fn run_weld(args: &[String], verbose: bool) -> WeldRun {
     let detail = stderr
         .lines()
         .map(|line| line.trim().trim_start_matches("weld: "))
-        .find(|line| !line.is_empty())
-        .unwrap_or("no diagnostic");
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join("; ");
+    let detail = if detail.is_empty() {
+        "no diagnostic".to_string()
+    } else {
+        detail
+    };
     WeldRun::Failed(format!("weld cannot link: {detail}"))
 }
 
