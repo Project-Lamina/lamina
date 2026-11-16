@@ -1459,6 +1459,22 @@ mod tests {
         assert!(args.iter().any(|a| a == "-o"));
     }
 
+    /// Darwin declares no libc environment because it ships its own runtime, and the
+    /// program still calls printf.
+    #[test]
+    fn weld_args_name_libsystem_on_macos() {
+        let input = Path::new("module.o");
+        let output = Path::new("module");
+        for arch in [TargetArchitecture::Aarch64, TargetArchitecture::X86_64] {
+            let target = Target::new(arch, TargetOperatingSystem::MacOS);
+            let args = build_weld_linker_args(input, output, &target, &[], &[]);
+            assert!(
+                args.iter().any(|a| a == "-lSystem"),
+                "expected -lSystem in args: {args:?}"
+            );
+        }
+    }
+
     /// A linker does not add startup objects; the driver does, as `gcc` does for `ld`.
     /// They are found through a GNU compiler, which this toolchain does not otherwise
     /// need, so a host without one links as before and weld supplies its own `_start`.
