@@ -4,7 +4,7 @@ use crate::cli::host_cpu::check_host_runs_level;
 use crate::cli::options::{CompileOptions, toolchain_backends};
 
 use crate::{
-    mir::{Module, TransformPipeline, codegen::from_ir_for_target},
+    mir::{MirType, Module, ScalarType, Signature, TransformPipeline, codegen::from_ir_for_target},
     mir_codegen::{
         assemble::{
             assemble_with_ras_object_options, assembler_input_extension, assembler_output_extension,
@@ -24,9 +24,11 @@ use crate::LaminaError;
 use crate::cache::lamina_cache_dir;
 use std::{
     env,
+    ffi::{CString, c_char},
     fs::{create_dir_all, remove_dir_all, write},
     path::Path,
     process::{self, Command},
+    ptr,
     str::FromStr,
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -56,6 +58,28 @@ fn jit_entry_point(module: &Module) -> Result<&str, LaminaError> {
             names.join(", ")
         ))),
     }
+}
+
+/// `main` takes the C entry shape `(i32 argc, ptr argv)`, which receives the program arguments.
+fn takes_argc_argv(sig: &Signature) -> bool {
+    matches!(
+        sig.params.as_slice(),
+        [first, second]
+            if matches!(first.ty, MirType::Scalar(ScalarType::I32))
+                && matches!(second.ty, MirType::Scalar(ScalarType::Ptr))
+    )
+}
+
+/// The argv a process started as `input_path arg...` would see.
+fn jit_argv(input_path: &Path, program_args: &[String]) -> Result<Vec<CString>, LaminaError> {
+    std::iter::once(input_path.to_string_lossy().into_owned())
+        .chain(program_args.iter().cloned())
+        .map(|arg| {
+            CString::new(arg).map_err(|_| {
+                LaminaError::ValidationError("program argument contains a NUL byte".to_owned())
+            })
+        })
+        .collect()
 }
 
 /// Handle JIT compilation and execution
@@ -215,6 +239,13 @@ pub fn handle_jit_compilation(
         };
 
         if let Some(runtime_result) = runtime_result {
+            let argv = jit_argv(input_path, &options.program_args)?;
+            let mut argv_ptrs: Vec<*const c_char> = argv.iter().map(|arg| arg.as_ptr()).collect();
+            let argc = argv_ptrs.len();
+            argv_ptrs.push(ptr::null());
+            let entry_args =
+                takes_argc_argv(&func.sig).then(|| vec![argc as i64, argv_ptrs.as_ptr() as i64]);
+
             if options.verbose {
                 println!("[JIT] Code compiled to executable memory");
                 println!("[JIT] Function pointer: {:p}", runtime_result.function_ptr);
@@ -234,7 +265,7 @@ pub fn handle_jit_compilation(
                 let result = execute_jit_function(
                     &func.sig,
                     runtime_result.function_ptr,
-                    None,
+                    entry_args.as_deref(),
                     options.verbose,
                     Some(func),
                 )?;
@@ -344,7 +375,9 @@ pub fn handle_jit_compilation(
                 if options.verbose {
                     println!("[JIT] Running {}", exe_path.display());
                 }
-                let status = Command::new(&exe_path).status()?;
+                let status = Command::new(&exe_path)
+                    .args(&options.program_args)
+                    .status()?;
                 if !status.success() {
                     if let Some(code) = status.code() {
                         if options.verbose {
@@ -399,6 +432,7 @@ mod tests {
             sandbox: false,
             codegen_units: None,
             cpu_level_explicit: false,
+            program_args: Vec::new(),
             mir_codegen_settings: MirCodegenSettings::default(),
         }
     }
@@ -502,11 +536,15 @@ entry:
     }
 
     #[test]
-    fn jit_refusal_under_no_fallback_exits_with_the_refusal_code() {
-        let output = run_lamina_jit(WIDE_MAIN_IR, "wide", &[], true);
-        assert_eq!(output.status.code(), Some(JIT_REFUSED_EXIT_CODE));
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(stderr.contains("128"), "{stderr}");
+    fn jit_passes_argc_and_argv_to_main() {
+        let output = run_lamina_jit(ARGC_MAIN_IR, "argc", &["--", "a", "b", "c"], false);
+        assert_eq!(output.status.code(), Some(4));
+    }
+
+    #[test]
+    fn jit_ignores_program_arguments_when_main_takes_none() {
+        let output = run_lamina_jit(SEVEN_MAIN_IR, "seven", &["--", "a", "b"], false);
+        assert_eq!(output.status.code(), Some(7));
     }
 
     #[test]

@@ -625,7 +625,7 @@ pub(crate) fn interpret_mir_function(
 /// # Errors
 ///
 /// Returns an error if:
-/// - Function has non-i64 parameters
+/// - Function has parameters that are neither integers nor pointers
 /// - Function has unsupported return type
 /// - Function should return a value but didn't
 ///
@@ -651,10 +651,18 @@ pub unsafe fn execute_jit_function(
         )));
     }
 
-    let all_i64 = sig
-        .params
-        .iter()
-        .all(|p| matches!(p.ty, MirType::Scalar(ScalarType::I64)));
+    let all_integer_or_pointer = sig.params.iter().all(|p| {
+        matches!(
+            p.ty,
+            MirType::Scalar(
+                ScalarType::I8
+                    | ScalarType::I16
+                    | ScalarType::I32
+                    | ScalarType::I64
+                    | ScalarType::Ptr
+            )
+        )
+    });
 
     // The encoders hand back a narrow integer sign-extended to the whole register.
     let returns_i64 = matches!(
@@ -665,9 +673,9 @@ pub unsafe fn execute_jit_function(
     );
     let returns_void = sig.ret_ty.is_none();
 
-    if !all_i64 {
+    if !all_integer_or_pointer {
         return Err(LaminaError::RuntimeError(format!(
-            "JIT execution: Function has non-i64 parameters, not yet supported. Parameter types: {:?}",
+            "JIT execution: Function has parameters other than integers and pointers, not yet supported. Parameter types: {:?}",
             sig.params.iter().map(|p| &p.ty).collect::<Vec<_>>()
         )));
     }

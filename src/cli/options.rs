@@ -65,6 +65,8 @@ pub struct CompileOptions {
     pub opt_level: u8,
     pub jit: bool,
     pub sandbox: bool,
+    /// The arguments after `--`, handed to the program under `--jit`.
+    pub program_args: Vec<String>,
     pub codegen_units: Option<usize>,
     /// True when `--cpu-level` named the x86-64 level, false when it was defaulted.
     /// A defaulted level is checked against the host before an AOT build for the host.
@@ -188,6 +190,7 @@ pub fn usage_text() -> String {
         "  --opt-level <n>         EXPERIMENTAL(mir only): Set optimization level (0-3, default: 1)",
         "  --jit                   Compile and execute using runtime compilation (JIT). With LAMINA_JIT_NO_FALLBACK set, exits 125 when in-memory compilation is refused",
         "  --sandbox               Enable sandbox for secure execution (requires --jit)",
+        "  -- <args>               Under --jit, pass these to the program: main(i32, ptr) gets argc and argv, as AOT does",
         "  -j, --jobs <n>          Number of parallel compilation threads (default: max - 2)",
         "  -g                      Emit assembler .file/.loc directives, with ras or with gas; with ras, also minimal DWARF in ELF and Mach-O objects",
         "  --regalloc <m>          MIR regalloc: incremental | linear | graph (default: linear at O1+ where the backend implements it, incremental otherwise)",
@@ -228,6 +231,7 @@ pub(crate) fn parse_args_from(args: Vec<String>) -> Result<CompileOptions, CliEr
         opt_level: 1,
         jit: false,
         sandbox: false,
+        program_args: Vec::new(),
         codegen_units: None,
         cpu_level_explicit: false,
         mir_codegen_settings: MirCodegenSettings::default(),
@@ -379,6 +383,10 @@ pub(crate) fn parse_args_from(args: Vec<String>) -> Result<CompileOptions, CliEr
                 options.sandbox = true;
                 i += 1;
             }
+            "--" => {
+                options.program_args = args[i + 1..].to_vec();
+                break;
+            }
             "-j" | "--jobs" => {
                 if i + 1 >= args.len() {
                     return Err(CliError::usage("Missing argument for -j/--jobs"));
@@ -453,6 +461,16 @@ pub(crate) fn parse_args_from(args: Vec<String>) -> Result<CompileOptions, CliEr
             "--sandbox applies only to --jit, which is what it sandboxes",
         ));
     }
+    if !options.program_args.is_empty() && !options.jit {
+        return Err(CliError::diagnosis(
+            "arguments after -- are passed to the program that --jit runs; add --jit or drop them",
+        ));
+    }
+    if options.sandbox && !options.program_args.is_empty() {
+        return Err(CliError::diagnosis(
+            "--sandbox runs the program in memory that holds no argv, so arguments after -- cannot reach it; drop --sandbox or drop --",
+        ));
+    }
 
     let x86_64 = options
         .target_arch
@@ -516,6 +534,23 @@ mod tests {
             assert!(error.contains("--jit"), "{error}");
             assert!(error.contains(flag), "{error}");
         }
+    }
+
+    #[test]
+    fn arguments_after_double_dash_go_to_the_program() {
+        let options = parse(&["--jit", "--", "a", "--jit", "-o"]).expect("program arguments parse");
+        assert_eq!(options.program_args, ["a", "--jit", "-o"]);
+        assert!(options.jit);
+    }
+
+    #[test]
+    fn program_arguments_need_jit_and_no_sandbox() {
+        let error = parse(&["--", "a"]).err().expect("refused without --jit");
+        assert!(error.contains("--jit"), "{error}");
+        let error = parse(&["--jit", "--sandbox", "--", "a"])
+            .err()
+            .expect("refused under --sandbox");
+        assert!(error.contains("--sandbox"), "{error}");
     }
 
     #[test]
@@ -652,6 +687,8 @@ mod tests {
             vec!["--cpu-level", "native"],
             vec!["--sandbox"],
             vec!["--jit", "--emit-asm"],
+            vec!["--", "a"],
+            vec!["--jit", "--sandbox", "--", "a"],
             vec!["--mcpu", "gfx42"],
             vec!["-j", "0"],
         ];
