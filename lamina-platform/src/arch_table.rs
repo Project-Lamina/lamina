@@ -352,7 +352,7 @@ macro_rules! arch_table {
             pub(crate) fn from_spelling(spelling: &str) -> Option<Self> {
                 $(
                     $(#[cfg($cfg)])?
-                    if spelling == $token $(|| spelling == $spelling)* {
+                    if same_spelling(spelling, $token) $(|| same_spelling(spelling, $spelling))* {
                         return Some(Self::$variant);
                     }
                 )*
@@ -963,6 +963,17 @@ pub(crate) const REFUSED_SPELLINGS: &[(&str, &str)] = &[
         "Architecture 's390' was not added\n  Hint: lamina supports 64-bit z/Architecture only. Write 's390x' (e.g. s390x_linux)",
     ),
 ];
+
+/// Whether two spellings are the same once `-` and `_` are read alike, so
+/// `cortex-m3` and `cortex_m3` name one architecture.
+pub(crate) fn same_spelling(given: &str, spelling: &str) -> bool {
+    let separator = |byte: u8| if byte == b'-' { b'_' } else { byte };
+    given.len() == spelling.len()
+        && given
+            .bytes()
+            .zip(spelling.bytes())
+            .all(|(a, b)| separator(a) == separator(b))
+}
 
 /// Shorthands for the fields of [`TargetArchitecture::spec`].
 ///

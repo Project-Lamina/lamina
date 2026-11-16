@@ -7,7 +7,7 @@ use std::{fmt, str::FromStr};
 
 use crate::arch_table::{
     ArchSpec, Endianness, FloatAggregateAbi, HalfPrecision, OutputArtifact, PointerWidth,
-    REFUSED_SPELLINGS, TargetDataLayout,
+    REFUSED_SPELLINGS, TargetDataLayout, same_spelling,
 };
 use crate::arch_variant::{
     Aarch64Level, ArchVariant, Armv7Profile, Armv7Variant, PowerLevel, RiscvIsa,
@@ -278,14 +278,40 @@ fn accepted_environments(spec: &ArchSpec, operating_system: TargetOperatingSyste
     names.join(", ")
 }
 
+/// Vendor fields a rustc or clang triple puts between the architecture and the operating
+/// system. Lamina drops them rather than naming them.
+const TRIPLE_VENDORS: &[&str] = &[
+    "unknown", "pc", "apple", "w64", "nvidia", "amd", "esp", "sony", "wrs", "fortanix", "kmc",
+    "uwp",
+];
+
+/// The `_`-joined form of a target string. `-` and `_` separate fields alike, so a triple
+/// copied from rustc or clang reads as its underscore spelling, and a vendor field that
+/// sits directly before a known operating system is dropped.
+fn canonical_spelling(target: &str) -> String {
+    let joined = target.replace('-', "_");
+    for vendor in TRIPLE_VENDORS {
+        let marker = format!("_{vendor}_");
+        let Some(at) = joined.find(&marker) else {
+            continue;
+        };
+        let operating_system = joined[at + marker.len()..].split('_').next().unwrap_or("");
+        if TargetOperatingSystem::from_str(operating_system).is_ok() {
+            return format!("{}{}", &joined[..at], &joined[at + vendor.len() + 1..]);
+        }
+    }
+    joined
+}
+
 impl FromStr for Target {
     type Err = String;
 
     fn from_str(target: &str) -> Result<Self, Self::Err> {
-        let (head, named_environment) = split_environment(target);
+        let target = canonical_spelling(target);
+        let (head, named_environment) = split_environment(&target);
         let head = TARGET_ALIASES
             .iter()
-            .find(|(alias, _)| *alias == head)
+            .find(|(alias, _)| same_spelling(head, alias))
             .map_or(head, |(_, canonical)| *canonical);
         let parts: Vec<&str> = head.rsplitn(2, '_').collect();
         if parts.len() != 2 {
@@ -395,7 +421,7 @@ pub fn parse_arch_token(
 ) -> Result<(TargetArchitecture, ArchVariant, Option<TargetEnvironment>), String> {
     if let Some((_, arch, variant, environment)) = VARIANT_SPELLINGS
         .iter()
-        .find(|(name, _, _, _)| *name == token)
+        .find(|(name, _, _, _)| same_spelling(token, name))
     {
         return Ok((*arch, *variant, *environment));
     }
@@ -419,7 +445,10 @@ pub fn parse_arch_token(
 /// Refusals are consulted first, so a machine lamina has decided not to implement is
 /// refused with its reason rather than resolving to a neighbour.
 pub fn parse_architecture(spelling: &str) -> Result<TargetArchitecture, &'static str> {
-    if let Some((_, reason)) = REFUSED_SPELLINGS.iter().find(|(name, _)| *name == spelling) {
+    if let Some((_, reason)) = REFUSED_SPELLINGS
+        .iter()
+        .find(|(name, _)| same_spelling(spelling, name))
+    {
         return Err(reason);
     }
     TargetArchitecture::from_spelling(spelling).ok_or("Unknown architecture")
@@ -567,6 +596,7 @@ impl FromStr for TargetOperatingSystem {
 /// The parser and the list the driver prints both read this table, so an alias cannot
 /// be accepted and go unmentioned.
 pub const OS_ALIASES: &[(&str, TargetOperatingSystem)] = &[
+    ("darwin", TargetOperatingSystem::MacOS),
     ("bsd", TargetOperatingSystem::FreeBSD),
     ("ps4", TargetOperatingSystem::Orbis),
     ("ps5", TargetOperatingSystem::Prospero),
@@ -1315,6 +1345,65 @@ mod tests {
         for name in ["s390x_windows_msvc", "riscv64_windows_gnullvm"] {
             let error = Target::from_str(name).expect_err(name);
             assert!(error.contains("not supported"), "{name}: {error}");
+        }
+    }
+
+    #[test]
+    fn dash_and_underscore_spell_the_same_target() {
+        for (dashed, underscored) in [
+            ("x86_64-linux-gnu", "x86_64_linux_gnu"),
+            ("x86_64-linux-musl", "x86_64_linux_musl"),
+            ("x86_64-windows-msvc", "x86_64_windows_msvc"),
+            ("cortex-m3_unknown", "cortex_m3_unknown"),
+            ("armv7a-neon_linux", "armv7a_neon_linux"),
+            ("ppc64le-power9_linux", "ppc64le_power9_linux"),
+        ] {
+            let dashed_target: Target = dashed.parse().expect(dashed);
+            let underscored_target: Target = underscored.parse().expect(underscored);
+            assert_eq!(dashed_target, underscored_target, "{dashed}");
+            assert_eq!(
+                dashed_target.to_string(),
+                underscored_target.to_string(),
+                "{dashed}"
+            );
+        }
+        let printed = "x86_64-linux-gnu".parse::<Target>().unwrap().to_string();
+        assert_eq!(printed, "x86_64_linux");
+    }
+
+    #[test]
+    fn a_rustc_triple_parses_to_its_underscore_target() {
+        for (triple, printed) in [
+            ("x86_64-unknown-linux-gnu", "x86_64_linux"),
+            ("x86_64-pc-windows-msvc", "x86_64_windows_msvc"),
+            ("aarch64-pc-windows-gnullvm", "aarch64_windows_gnullvm"),
+            ("x86_64-w64-windows-gnu", "x86_64_windows_gnu"),
+            ("aarch64-apple-darwin", "aarch64_macos"),
+            ("x86_64-apple-darwin", "x86_64_macos"),
+            ("wasm32-unknown-unknown", "wasm32_unknown"),
+            ("riscv64gc-unknown-linux-gnu", "riscv64_linux"),
+            ("aarch64-unknown-linux-musl", "aarch64_linux_musl"),
+        ] {
+            let target: Target = triple.parse().expect(triple);
+            assert_eq!(target.to_string(), printed, "{triple}");
+        }
+    }
+
+    #[test]
+    fn the_darwin_spelling_is_the_macos_operating_system() {
+        assert_eq!(
+            "darwin".parse::<TargetOperatingSystem>(),
+            Ok(TargetOperatingSystem::MacOS)
+        );
+    }
+
+    #[test]
+    fn the_refused_spelling_is_refused_with_a_dash_or_an_underscore() {
+        for name in ["ppc64-elfv1_linux", "ppc64_elfv1_linux"] {
+            assert!(
+                Target::from_str(name).unwrap_err().contains("ELFv1"),
+                "{name}"
+            );
         }
     }
 }
