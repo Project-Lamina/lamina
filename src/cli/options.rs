@@ -187,7 +187,7 @@ pub fn usage_text() -> String {
          \x20                         MinGw-w64). Left out, each target declares its own.",
         "  --cpu-level <v>         x86-64 level the output may use: v1 | v2 | v3 | v4 (default: v2, x86_64 targets only)",
         "  --emit-mir              Only emit MIR (.lumir) and exit",
-        "  --opt-level <n>         EXPERIMENTAL(mir only): Set optimization level (0-3, default: 1)",
+        "  --opt-level <n>         EXPERIMENTAL: Set optimization level (0-3, default: 1)",
         "  --jit                   Compile and execute using runtime compilation (JIT). With LAMINA_JIT_NO_FALLBACK set, exits 125 when in-memory compilation is refused",
         "  --sandbox               Enable sandbox for secure execution (requires --jit)",
         "  -- <args>               Under --jit, pass these to the program: main(i32, ptr) gets argc and argv, as AOT does",
@@ -551,6 +551,11 @@ mod tests {
             .err()
             .expect("refused under --sandbox");
         assert!(error.contains("--sandbox"), "{error}");
+    }
+
+    #[test]
+    fn opt_level_help_does_not_limit_it_to_mir() {
+        assert!(!usage_text().contains("mir only"));
     }
 
     #[test]
