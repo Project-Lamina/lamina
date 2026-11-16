@@ -571,7 +571,10 @@ mod tests {
         let global = &module.global_declarations["msg"];
         assert!(global.is_readonly);
         let printed = module.to_string();
-        assert!(printed.contains("@readonly global $msg: [3 x i8] = \"hi\""), "{printed}");
+        assert!(
+            printed.contains("@readonly global $msg: [3 x i8] = \"hi\""),
+            "{printed}"
+        );
         assert_eq!(parse_module(&printed).expect("round trip"), module);
     }
 
@@ -580,7 +583,10 @@ mod tests {
         for (source, fragment) in [
             ("@readonly\nglobal $x: i64\n", "no initializer"),
             ("@readonly\n@extern\nglobal $x: i64\n", "@extern"),
-            ("@readonly\n@thread_local\nglobal $x: i64 = 1\n", "@thread_local"),
+            (
+                "@readonly\n@thread_local\nglobal $x: i64 = 1\n",
+                "@thread_local",
+            ),
             ("@readonly\n@readonly\nglobal $x: i64 = 1\n", "Duplicate"),
         ] {
             let message = parse_module(source)

@@ -3086,7 +3086,10 @@ entry:
         let elf = emit_readonly_globals(TargetOperatingSystem::Linux);
         assert_eq!(section_before(&elf, "msg"), ".section .rodata,\"a\"");
         assert_eq!(section_before(&elf, "zeros"), ".section .rodata,\"a\"");
-        assert_eq!(section_before(&elf, "table"), ".section .data.rel.ro,\"aw\"");
+        assert_eq!(
+            section_before(&elf, "table"),
+            ".section .data.rel.ro,\"aw\""
+        );
 
         let macho = emit_readonly_globals(TargetOperatingSystem::MacOS);
         assert_eq!(section_before(&macho, "_msg"), ".section __TEXT,__const");
