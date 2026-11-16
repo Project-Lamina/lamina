@@ -54,16 +54,19 @@ fn get_crt_file(compiler: &str, crt_name: &str, multilib: Option<&str>) -> Optio
 
 /// The driver whose start-up objects belong to the target: the host compiler for a
 /// host-architecture link, otherwise the target's cross compiler.
-fn target_compiler(
-    target_arch: TargetArchitecture,
-    environment: TargetEnvironment,
-) -> Result<String, String> {
-    let Some(libc) = environment.libc() else {
-        return Err(format!(
-            "the {environment} environment links no C library, so there is no compiler to take C runtime objects from"
-        ));
+fn target_compiler(target_arch: TargetArchitecture, libc: Option<Libc>) -> Result<String, String> {
+    let Some(libc) = libc else {
+        return Err(
+            "the target links no C library, so there is no compiler to take C runtime objects from"
+                .to_string(),
+        );
     };
     match libc {
+        Libc::Ucrt => Err(
+            "the MSVC C runtime comes with the Visual Studio link.exe, not from a GNU driver"
+                .to_string(),
+        ),
+        Libc::MinGw => Err(unimplemented_libc_message(Libc::MinGw)),
         Libc::Glibc => {
             if host_matches(target_arch) {
                 return detect_compiler().map(str::to_string).ok_or_else(|| {
@@ -91,18 +94,28 @@ fn unimplemented_libc_message(libc: Libc) -> String {
 
 /// Refuse a target whose environment names a C library lamina has no implementation of.
 fn check_libc_is_implemented(target: &Target) -> Result<(), LaminaError> {
-    let Some(libc) = target.environment.libc() else {
+    let Some(libc) = target.libc() else {
         return Ok(());
     };
     if libc.is_implemented() {
         return Ok(());
     }
     let base = format!("{}_{}", target.arch_token(), target.operating_system);
+    let alternatives = if target.operating_system == TargetOperatingSystem::Windows {
+        format!(
+            "`{base}_{}` for the MSVC C runtime, or `{base}` for a freestanding binary",
+            TargetEnvironment::Msvc,
+        )
+    } else {
+        format!(
+            "`{base}` for the environment this target declares, `{base}_{}` for musl, or `{base}_{}` for a freestanding binary",
+            TargetEnvironment::Musl,
+            TargetEnvironment::Freestanding,
+        )
+    };
     Err(LaminaError::ValidationError(format!(
-        "cannot link {target}: {}; write `{base}` for the environment this target declares, `{base}_{}` for musl, or `{base}_{}` for a freestanding binary",
+        "cannot link {target}: {}; write {alternatives}",
         unimplemented_libc_message(libc),
-        TargetEnvironment::Musl,
-        TargetEnvironment::Freestanding,
     )))
 }
 
@@ -125,7 +138,7 @@ fn musl_tool(target_arch: TargetArchitecture, tool: &str) -> Result<String, Stri
 }
 
 fn crt_compiler(target: &Target) -> Result<String, LaminaError> {
-    target_compiler(target.architecture, target.environment)
+    target_compiler(target.architecture, target.libc())
         .map_err(|reason| missing_crt_error(target, &reason))
 }
 
@@ -150,7 +163,7 @@ fn required_crt_file(
 }
 
 fn get_crt_files(target: &Target) -> Result<Vec<String>, LaminaError> {
-    if os_uses_macho(target.operating_system) || !target.environment.is_hosted() {
+    if os_uses_macho(target.operating_system) || target.libc().is_none() {
         return Ok(Vec::new());
     }
 
@@ -162,7 +175,7 @@ fn get_crt_files(target: &Target) -> Result<Vec<String>, LaminaError> {
 }
 
 fn get_crtn_files(target: &Target) -> Result<Vec<String>, LaminaError> {
-    if os_uses_macho(target.operating_system) || !target.environment.is_hosted() {
+    if os_uses_macho(target.operating_system) || target.libc().is_none() {
         return Ok(Vec::new());
     }
 
@@ -438,7 +451,10 @@ fn build_arch_emulation_flags(
 }
 
 fn build_crt_args(target: &Target, before_user_object: bool) -> Result<Vec<String>, LaminaError> {
-    if os_uses_macho(target.operating_system) || cross_os(target.operating_system) {
+    if os_uses_macho(target.operating_system)
+        || cross_os(target.operating_system)
+        || target.operating_system == TargetOperatingSystem::Windows
+    {
         return Ok(Vec::new());
     }
 
@@ -503,7 +519,10 @@ fn build_library_args(target: &Target) -> Result<Vec<String>, LaminaError> {
             }
         }
         args.push("-lSystem".to_string());
-    } else if !cross_os(target_os) && target.environment.libc().is_some() {
+    } else if !cross_os(target_os)
+        && target_os != TargetOperatingSystem::Windows
+        && target.libc().is_some()
+    {
         args.push("-lc".to_string());
         if let Some(libgcc) = libgcc_file(target) {
             args.push(libgcc);
@@ -515,7 +534,7 @@ fn build_library_args(target: &Target) -> Result<Vec<String>, LaminaError> {
 
 fn libgcc_file(target: &Target) -> Option<String> {
     let target_arch = target.architecture;
-    let compiler = target_compiler(target_arch, target.environment).ok()?;
+    let compiler = target_compiler(target_arch, target.libc()).ok()?;
     get_libgcc_file(&compiler, multilib_flag(target_arch))
 }
 
@@ -599,7 +618,7 @@ fn build_weld_linker_args(
     }
     // A freestanding target has no C library to name and nothing to find at run
     // time, so it gets neither the interpreter nor the library.
-    let hosted = target.environment.libc().is_some();
+    let hosted = target.libc().is_some();
     if hosted && let Some(interpreter) = target.interpreter() {
         args.push("--dynamic-linker".to_string());
         args.push(interpreter.to_string());
@@ -657,6 +676,26 @@ fn build_clang_windows_linker_args(
     Ok(args)
 }
 
+/// The static C runtime libraries `link.exe` takes for the C library a target declares.
+///
+/// A target that declares no C library, or the MSVC one, links the static MSVC runtime
+/// as `cl` does by default. Any other C library is refused by name: `link.exe` cannot
+/// take it.
+fn msvc_crt_libraries(libc: Option<Libc>) -> Result<[&'static str; 5], LaminaError> {
+    match libc {
+        None | Some(Libc::Ucrt) => Ok([
+            "libcmt.lib",
+            "libvcruntime.lib",
+            "libucrt.lib",
+            "legacy_stdio_definitions.lib",
+            "kernel32.lib",
+        ]),
+        Some(libc) => Err(LaminaError::ValidationError(format!(
+            "MSVC link takes the MSVC C runtime, not the {libc} C library; write the `msvc` environment for this target"
+        ))),
+    }
+}
+
 /// Link the static C runtime as cl does by default, and leave the entry point to
 /// mainCRTStartup, which sets up the CRT and TLS before it calls `main`. The CRT also
 /// supplies memset, memcpy and memmove, and `_tls_index`.
@@ -664,9 +703,11 @@ fn build_msvc_linker_args(
     input_path: &Path,
     output_path: &Path,
     target_arch: TargetArchitecture,
+    libc: Option<Libc>,
     runtime_objects: &[PathBuf],
     additional_flags: &[String],
 ) -> Result<Vec<String>, LaminaError> {
+    let crt_libraries = msvc_crt_libraries(libc)?;
     let mut args = vec!["/nologo".to_string()];
     args.push("/subsystem:console".to_string());
     args.extend(build_msvc_library_paths(target_arch)?);
@@ -675,11 +716,7 @@ fn build_msvc_linker_args(
     args.push(input_path.to_string_lossy().to_string());
     args.extend(object_args(runtime_objects));
     args.push(format!("/OUT:{}", output_path.display()));
-    args.push("libcmt.lib".to_string());
-    args.push("libvcruntime.lib".to_string());
-    args.push("libucrt.lib".to_string());
-    args.push("legacy_stdio_definitions.lib".to_string());
-    args.push("kernel32.lib".to_string());
+    args.extend(crt_libraries.iter().map(|lib| lib.to_string()));
     Ok(args)
 }
 
@@ -833,7 +870,7 @@ fn link_object(
     }
 
     let defaulted = backend.is_none();
-    let backend = backend.unwrap_or_else(|| detect_linker_backend(target_arch, target_os));
+    let backend = backend.unwrap_or_else(|| detect_linker_backend(target));
     if defaulted
         && backend == LinkerBackend::Weld
         && let Some(gap) = weld_gap(target_arch, target_os)
@@ -963,6 +1000,7 @@ fn link_object(
                 input_path,
                 output_path,
                 target_arch,
+                target.libc(),
                 runtime_objects,
                 additional_flags,
             )?;
@@ -1158,12 +1196,12 @@ fn run_linker(cmd: &str, args: Vec<String>, verbose: bool) -> Result<(), LaminaE
 }
 
 /// The linker used when none is named: weld, which is installed beside `lamina`, so
-/// no host tool is needed.
-pub fn detect_linker_backend(
-    _target_arch: TargetArchitecture,
-    _target_os: TargetOperatingSystem,
-) -> LinkerBackend {
-    LinkerBackend::Weld
+/// no host tool is needed. The MSVC environment on Windows takes `link.exe` instead.
+pub fn detect_linker_backend(target: &Target) -> LinkerBackend {
+    match (target.operating_system, target.environment) {
+        (TargetOperatingSystem::Windows, TargetEnvironment::Msvc) => LinkerBackend::Msvc,
+        _ => LinkerBackend::Weld,
+    }
 }
 
 fn weld_supports(target_arch: TargetArchitecture, target_os: TargetOperatingSystem) -> bool {
@@ -1311,6 +1349,7 @@ mod tests {
             Path::new("module.o"),
             Path::new("module.exe"),
             TargetArchitecture::X86_64,
+            Some(Libc::Ucrt),
             &[],
             &[],
         )
@@ -1439,10 +1478,8 @@ mod tests {
 
     #[test]
     fn weld_is_the_default_linker() {
-        assert_eq!(
-            detect_linker_backend(TargetArchitecture::X86_64, TargetOperatingSystem::Linux),
-            LinkerBackend::Weld
-        );
+        let target = Target::new(TargetArchitecture::X86_64, TargetOperatingSystem::Linux);
+        assert_eq!(detect_linker_backend(&target), LinkerBackend::Weld);
     }
 
     #[test]
@@ -1630,7 +1667,7 @@ mod tests {
             assert!(message.contains("lamina"), "{message}");
             assert!(message.contains("not implemented yet"), "{message}");
             assert!(message.contains("musl"), "{message}");
-            let reason = target_compiler(arch, TargetEnvironment::Lamina)
+            let reason = target_compiler(arch, Some(Libc::Lamina))
                 .expect_err("no compiler supplies a Lamina C runtime");
             assert!(reason.contains("Lamina C library"), "{reason}");
         }
@@ -1773,5 +1810,86 @@ mod tests {
             assert!(!libs.iter().any(|a| a == "-lc"), "{os:?}");
             assert!(!libs.iter().any(|a| a == "-syslibroot"), "{os:?}");
         }
+    }
+
+    fn windows_target(environment: Option<TargetEnvironment>) -> Target {
+        let target = Target::new(TargetArchitecture::X86_64, TargetOperatingSystem::Windows);
+        match environment {
+            Some(environment) => target
+                .with_environment(environment)
+                .expect("x86_64 Windows takes this environment"),
+            None => target,
+        }
+    }
+
+    #[test]
+    fn the_msvc_environment_on_windows_selects_link_exe() {
+        assert_eq!(
+            detect_linker_backend(&windows_target(Some(TargetEnvironment::Msvc))),
+            LinkerBackend::Msvc
+        );
+    }
+
+    #[test]
+    fn the_other_windows_environments_keep_weld_as_the_default_linker() {
+        for environment in [
+            None,
+            Some(TargetEnvironment::Gnu),
+            Some(TargetEnvironment::GnuLlvm),
+        ] {
+            assert_eq!(
+                detect_linker_backend(&windows_target(environment)),
+                LinkerBackend::Weld,
+                "{environment:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_mingw_environment_is_refused_by_name_before_any_input_is_read() {
+        for environment in [TargetEnvironment::Gnu, TargetEnvironment::GnuLlvm] {
+            let target = windows_target(Some(environment));
+            let error = link(
+                Path::new("no_such_module.o"),
+                Path::new("no_such_module.exe"),
+                &target,
+                None,
+                &[],
+                false,
+            )
+            .expect_err("no mingw-w64 runtime is linked yet");
+            let message = error.to_string();
+            assert!(message.contains("mingw-w64"), "{message}");
+            assert!(message.contains("not implemented yet"), "{message}");
+        }
+    }
+
+    #[test]
+    fn the_msvc_crt_is_chosen_by_the_declared_c_library() {
+        let ucrt = msvc_crt_libraries(Some(Libc::Ucrt)).expect("the UCRT is linked");
+        assert!(ucrt.contains(&"libucrt.lib"), "{ucrt:?}");
+        assert_eq!(msvc_crt_libraries(None).expect("undeclared Windows"), ucrt);
+        let error = msvc_crt_libraries(Some(Libc::MinGw))
+            .expect_err("link.exe cannot take the mingw-w64 runtime");
+        assert!(error.to_string().contains("mingw-w64"), "{error}");
+    }
+
+    #[test]
+    fn the_msvc_environment_takes_no_gnu_start_up_objects_or_libc() {
+        let target = windows_target(Some(TargetEnvironment::Msvc));
+        assert!(build_crt_args(&target, true).expect("crt").is_empty());
+        assert!(build_crt_args(&target, false).expect("crtn").is_empty());
+        let args = build_weld_linker_args(
+            Path::new("module.o"),
+            Path::new("module.exe"),
+            &target,
+            &[],
+            &[],
+        );
+        assert!(!args.iter().any(|arg| arg == "-lc"), "{args:?}");
+        assert!(
+            !args.iter().any(|arg| arg == "--dynamic-linker"),
+            "{args:?}"
+        );
     }
 }

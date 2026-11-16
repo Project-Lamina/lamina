@@ -181,7 +181,8 @@ pub fn usage_text() -> String {
         "                          A sub-architecture may replace the arch: rv32imac, rv64gc,\n\
          \x20                         armv7r, armv7a-neon, aarch64v8.2, ppc64le-power9\n\
          \x20                         An environment may follow the OS: gnu | musl | lamina |\n\
-         \x20                         eabi | eabihf | none. Left out, each target declares its own.",
+         \x20                         eabi | eabihf | none, and on Windows msvc | gnullvm (gnu is\n\
+         \x20                         MinGw-w64). Left out, each target declares its own.",
         "  --cpu-level <v>         x86-64 level the output may use: v1 | v2 | v3 | v4 (default: v2, x86_64 targets only)",
         "  --emit-mir              Only emit MIR (.lumir) and exit",
         "  --opt-level <n>         EXPERIMENTAL(mir only): Set optimization level (0-3, default: 1)",
@@ -314,7 +315,7 @@ pub(crate) fn parse_args_from(args: Vec<String>) -> Result<CompileOptions, CliEr
                          Also accepted, as second spellings of the same targets:\n{}\n\
                          A RISC-V ISA string may be named instead: rv32imac, rv64gc, and an \
                          environment may follow the operating system: gnu, musl, lamina, \
-                         eabi, eabihf, none",
+                         eabi, eabihf, none, and on Windows msvc, gnullvm",
                         requested_target,
                         host_arch_list().join(", "),
                         target_alias_list().join(", ")
