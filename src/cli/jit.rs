@@ -14,7 +14,9 @@ use crate::{
         runtime_builtins,
     },
     parser::parse_module,
-    runtime::{Sandbox, SandboxConfig, compile_to_runtime, execute_jit_function},
+    runtime::{
+        Sandbox, SandboxConfig, compile_to_runtime, execute_jit_function, wide_integer_refusal,
+    },
 };
 use lamina_platform::{Target, TargetArchitecture, cpu_count};
 
@@ -142,6 +144,9 @@ pub fn handle_jit_compilation(
             SandboxConfig::restrictive()
         };
 
+        if let Some(reason) = wide_integer_refusal(&ir_mod) {
+            return Err(LaminaError::ValidationError(reason));
+        }
         let mut sandbox = Sandbox::new(target.architecture, target.operating_system, config);
 
         let function_name = jit_entry_point(&mir_mod)?;
@@ -171,12 +176,16 @@ pub fn handle_jit_compilation(
             LaminaError::ValidationError("Function not found in module".to_owned())
         })?;
 
-        let (runtime_result, in_memory_failure) = match compile_to_runtime(
-            &mir_mod,
-            target.architecture,
-            target.operating_system,
-            Some(jit_function_name),
-        ) {
+        let compiled = match wide_integer_refusal(&ir_mod) {
+            Some(reason) => Err(LaminaError::ValidationError(reason)),
+            None => compile_to_runtime(
+                &mir_mod,
+                target.architecture,
+                target.operating_system,
+                Some(jit_function_name),
+            ),
+        };
+        let (runtime_result, in_memory_failure) = match compiled {
             Ok(result) => (Some(result), None),
             Err(err) => {
                 if env::var_os("LAMINA_JIT_NO_FALLBACK").is_some() {

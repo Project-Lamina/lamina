@@ -62,7 +62,9 @@ pub fn compile_to_runtime(
         // also maps the module's globals and patches their load-time pointers.
         let (memory, function_offsets) = RasRuntime::new(_target_arch, _target_os)
             .compile_with_offsets(_module)
-            .map_err(|e| LaminaError::ValidationError(format!("Runtime compilation failed: {e}")))?;
+            .map_err(|e| {
+                LaminaError::ValidationError(format!("Runtime compilation failed: {e}"))
+            })?;
 
         // Find the function offset for the requested function
         let function_offset = if let Some(name) = _function_name {
@@ -270,6 +272,32 @@ pub fn compile_to_runtime(
             "Runtime compilation requires the 'encoder' feature to be enabled".to_string(),
         ))
     }
+}
+
+/// Why the JIT must not run a module that uses 128-bit integers, or `None`.
+///
+/// Lamina lowers i128 and u128 to pairs of 64-bit words, and the JIT has no encoding of
+/// its own that matches the AOT backends' results for them, so the whole module falls back
+/// to AOT. The check reads the parsed IR, where those types still exist; MIR has no
+/// marker for them.
+pub(crate) fn wide_integer_refusal<T: std::fmt::Debug>(module: &T) -> Option<String> {
+    let text = format!("{module:?}");
+    let ident = |c: char| c.is_alphanumeric() || c == '_';
+    ["I128", "U128"]
+        .into_iter()
+        .find(|token| {
+            text.match_indices(token).any(|(at, _)| {
+                let before = text[..at].chars().next_back();
+                let after = text[at + token.len()..].chars().next();
+                !before.is_some_and(ident) && !after.is_some_and(ident)
+            })
+        })
+        .map(|token| {
+            format!(
+                "--jit does not run modules that use {} values: the JIT cannot match the AOT result for them",
+                token.to_ascii_lowercase()
+            )
+        })
 }
 
 #[cfg(test)]
@@ -810,5 +838,32 @@ mod tests {
             assert_eq!(aot, jit);
             assert_eq!(aot, "7\n");
         }
+    }
+}
+
+#[cfg(test)]
+mod wide_refusal_tests {
+    use super::wide_integer_refusal;
+    use crate::parser::parse_module;
+
+    #[test]
+    fn a_module_using_i128_or_u128_is_refused_for_jit() {
+        let with_i128 =
+            parse_module("fn @main() -> i32 {\nentry:\n  %a = add.i128 0, 1\n  ret.i32 0\n}\n")
+                .expect("parse");
+        let refusal = wide_integer_refusal(&with_i128).expect("i128 must be refused");
+        assert!(refusal.contains("i128"), "{refusal}");
+        let with_u128 =
+            parse_module("fn @main(u128 %v) -> i32 {\nentry:\n  ret.i32 0\n}\n").expect("parse");
+        assert!(wide_integer_refusal(&with_u128).is_some());
+    }
+
+    #[test]
+    fn narrower_integers_are_not_refused_for_jit() {
+        let narrow = parse_module(
+            "fn @I128Helper(i64 %x) -> i64 {\nentry:\n  ret.i64 %x\n}\nfn @main() -> i32 {\nentry:\n  ret.i32 0\n}\n",
+        )
+        .expect("parse");
+        assert_eq!(wide_integer_refusal(&narrow), None);
     }
 }

@@ -36,6 +36,9 @@ pub fn compile_lir_internal(
     let target_os = host.operating_system;
 
     let ir_module = parse_module(ir_code)?;
+    if let Some(reason) = super::wide_integer_refusal(&ir_module) {
+        return Err(LaminaError::ValidationError(reason));
+    }
     let mir_module = from_ir_for_target(&ir_module, "lir_macro", host.data_layout())?;
 
     // MIR stores function names without @ prefix, so strip it if present
