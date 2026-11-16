@@ -47,6 +47,7 @@ ILP32_UNSUPPORTED = {
         name: 'an i64 atomic needs a double-word atomic the backend does not emit'
         for name in ('atomic_cmpxchg', 'atomic_orderings', 'atomics')
     },
+    'atomic_live_result': 'this backend does not emit atomics',
     'vector_operations': 'this backend has no vector unit',
 }
 
