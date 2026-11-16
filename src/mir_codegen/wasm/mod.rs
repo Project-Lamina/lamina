@@ -523,9 +523,9 @@ pub fn generate_mir_wasm_with_units<W: Write>(
                     write!(writer, " (result i64)")?;
                 }
                 writeln!(writer)?;
-                for index in 0..shape.params.len() {
+                for (index, param) in shape.params.iter().enumerate() {
                     writeln!(writer, "    local.get {index}")?;
-                    convert_param(writer, shape.params[index], memory, pointer_width)?;
+                    convert_param(writer, *param, memory, pointer_width)?;
                 }
                 writeln!(writer, "    call ${mangled}")?;
                 if func.sig.ret_ty.is_some() {
