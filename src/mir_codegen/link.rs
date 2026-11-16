@@ -1101,8 +1101,9 @@ fn run_weld(args: &[String], verbose: bool) -> WeldRun {
 
 /// Find a toolchain binary beside the current executable, falling back to PATH.
 /// The sibling is preferred because it ships with this lamina and so matches it,
-/// so `LAMINA_WELD` is how a deliberately newer one is named. Test binaries live
-/// in `deps/`, so that directory's parent is checked too.
+/// so `LAMINA_WELD` is how a deliberately newer one is named. A test binary sits
+/// somewhere under `target`, at a depth cargo moves between releases, so from
+/// there every directory up to `target` is searched.
 fn resolve_toolchain_command(name: &str) -> String {
     toolchain_command(name, env::var_os(format!("LAMINA_{}", name.to_uppercase())))
 }
@@ -1112,19 +1113,17 @@ fn toolchain_command(name: &str, named: Option<OsString>) -> String {
         return named.to_string_lossy().to_string();
     }
     let suffix = if cfg!(windows) { ".exe" } else { "" };
-    if let Ok(current_exe) = env::current_exe()
-        && let Some(dir) = current_exe.parent()
-    {
-        let mut dirs = vec![dir.to_path_buf()];
-        if dir.file_name().is_some_and(|n| n == "deps")
-            && let Some(parent) = dir.parent()
-        {
-            dirs.push(parent.to_path_buf());
-        }
-        for dir in dirs {
-            let candidate = dir.join(format!("{name}{suffix}"));
+    let file = format!("{name}{suffix}");
+    if let Ok(current_exe) = env::current_exe() {
+        let is_target = |dir: &Path| dir.file_name().is_some_and(|last| last == "target");
+        let under_target = current_exe.ancestors().any(is_target);
+        for dir in current_exe.ancestors().skip(1) {
+            let candidate = dir.join(&file);
             if candidate.is_file() {
                 return candidate.to_string_lossy().to_string();
+            }
+            if !under_target || is_target(dir) {
+                break;
             }
         }
     }
