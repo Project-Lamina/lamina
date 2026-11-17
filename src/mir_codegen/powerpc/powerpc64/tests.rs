@@ -226,6 +226,38 @@ fn narrow_parameters_are_sign_extended_on_entry() {
 }
 
 #[test]
+fn narrow_external_results_are_extended_after_the_call() {
+    for (ty, extend) in [
+        (MirType::Scalar(ScalarType::I1), "clrldi 3, 3, 63"),
+        (MirType::Scalar(ScalarType::I8), "extsb 3, 3"),
+        (MirType::Scalar(ScalarType::I16), "extsh 3, 3"),
+        (MirType::Scalar(ScalarType::I32), "extsw 3, 3"),
+    ] {
+        let reg = Register::Virtual(VirtualReg::gpr(0));
+        let mut module = MirModule::new("narrow_result");
+        module.add_function(
+            FunctionBuilder::new("caller")
+                .returns(ty)
+                .block("entry")
+                .instr(MirInst::Call {
+                    name: "ext".to_string(),
+                    args: Vec::new(),
+                    ret: Some(reg.clone()),
+                    ret_ty: Some(ty),
+                })
+                .instr(MirInst::Ret {
+                    value: Some(Operand::Register(reg)),
+                })
+                .build(),
+        );
+        let mut output = Vec::new();
+        generate_mir_ppc64(&module, &mut output, TargetOperatingSystem::Linux).unwrap();
+        let s = String::from_utf8(output).unwrap();
+        assert!(s.contains(&format!("    bl ext\n    nop\n    {extend}\n")), "{s}");
+    }
+}
+
+#[test]
 fn bool_parameters_are_zero_extended_on_entry() {
     let reg = Register::Virtual(VirtualReg::gpr(0));
     let ty = MirType::Scalar(ScalarType::I1);

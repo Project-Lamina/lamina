@@ -1393,7 +1393,12 @@ fn emit_instruction_ppc64<W: Write>(
             }
             writeln!(writer, "    b {block_prefix}{default}")?;
         }
-        MirInst::Call { name, args, ret, .. } => {
+        MirInst::Call {
+            name,
+            args,
+            ret,
+            ret_ty,
+        } => {
             let abi = Ppc64Abi::new(target_os);
             let arg_regs = Ppc64Abi::ARG_REGISTERS;
             let result = aggregates.result(name);
@@ -1595,6 +1600,11 @@ fn emit_instruction_ppc64<W: Write>(
                 }
             }
 
+            match ret_ty {
+                Some(MirType::Scalar(ScalarType::I1)) => writeln!(writer, "    clrldi 3, 3, 63")?,
+                Some(ty) => extend_integer(writer, "3", ty, true, pointer_width)?,
+                None => {}
+            }
             if let Some(ret_reg) = ret
                 && let Register::Virtual(vreg) = ret_reg
             {
