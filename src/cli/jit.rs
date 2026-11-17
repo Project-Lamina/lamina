@@ -26,6 +26,7 @@ use std::{
     env,
     ffi::{CString, c_char},
     fs::{create_dir_all, remove_dir_all, write},
+    iter::once,
     path::Path,
     process::{self, Command},
     ptr,
@@ -72,7 +73,7 @@ fn takes_argc_argv(sig: &Signature) -> bool {
 
 /// The argv a process started as `input_path arg...` would see.
 fn jit_argv(input_path: &Path, program_args: &[String]) -> Result<Vec<CString>, LaminaError> {
-    std::iter::once(input_path.to_string_lossy().into_owned())
+    once(input_path.to_string_lossy().into_owned())
         .chain(program_args.iter().cloned())
         .map(|arg| {
             CString::new(arg).map_err(|_| {
@@ -412,8 +413,19 @@ pub fn handle_jit_compilation(
 mod tests {
     use super::*;
     use crate::cli::options::CompileOptions;
+    use crate::cli::options::usage_text;
     use crate::mir_codegen::MirCodegenSettings;
-    use std::{fs::remove_file, path::Path};
+    use std::{fs::remove_file, path::Path, path::PathBuf};
+
+    fn lamina_binary() -> PathBuf {
+        let binary = format!("lamina{}", env::consts::EXE_SUFFIX);
+        env::current_exe()
+            .expect("test executable")
+            .ancestors()
+            .map(|dir| dir.join(&binary))
+            .find(|candidate| candidate.is_file())
+            .expect("build the binary first: cargo build --bin lamina")
+    }
 
     fn minimal_options() -> CompileOptions {
         CompileOptions {
@@ -498,16 +510,6 @@ entry:
         "fn @main(i32 %argc, ptr %argv) -> i32 {\nentry:\n    ret.i32 %argc\n}\n";
     const SEVEN_MAIN_IR: &str = "fn @main() -> i32 {\nentry:\n    ret.i32 7\n}\n";
 
-    fn lamina_binary() -> std::path::PathBuf {
-        let binary = format!("lamina{}", env::consts::EXE_SUFFIX);
-        env::current_exe()
-            .expect("test executable")
-            .ancestors()
-            .map(|dir| dir.join(&binary))
-            .find(|candidate| candidate.is_file())
-            .expect("build the binary first: cargo build --bin lamina")
-    }
-
     fn run_lamina_jit(
         ir: &str,
         name: &str,
@@ -550,7 +552,7 @@ entry:
     #[test]
     fn usage_text_documents_the_refusal_code() {
         assert!(
-            crate::cli::options::usage_text().contains(&format!("exits {JIT_REFUSED_EXIT_CODE}")),
+            usage_text().contains(&format!("exits {JIT_REFUSED_EXIT_CODE}")),
             "the usage text must name the code the refusal exits with"
         );
     }
