@@ -245,7 +245,9 @@ impl Kernel {
                     width(*ty)?
                 )?;
             }
-            Instruction::Call { name, args, ret, .. } if args.is_empty() => {
+            Instruction::Call {
+                name, args, ret, ..
+            } if args.is_empty() => {
                 let intrinsic =
                     GpuIntrinsic::from_name(name).ok_or_else(|| error("unsupported PTX call"))?;
                 if intrinsic == GpuIntrinsic::WorkgroupBarrier {

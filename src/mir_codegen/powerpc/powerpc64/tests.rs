@@ -253,7 +253,10 @@ fn narrow_external_results_are_extended_after_the_call() {
         let mut output = Vec::new();
         generate_mir_ppc64(&module, &mut output, TargetOperatingSystem::Linux).unwrap();
         let s = String::from_utf8(output).unwrap();
-        assert!(s.contains(&format!("    bl ext\n    nop\n    {extend}\n")), "{s}");
+        assert!(
+            s.contains(&format!("    bl ext\n    nop\n    {extend}\n")),
+            "{s}"
+        );
     }
 }
 

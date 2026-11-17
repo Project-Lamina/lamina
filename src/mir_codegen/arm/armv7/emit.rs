@@ -474,7 +474,9 @@ pub(crate) fn emit_instruction<W: Write>(
             scratch.free(subject);
         }
 
-        MirInst::Call { name, args, ret, .. } => {
+        MirInst::Call {
+            name, args, ret, ..
+        } => {
             call::emit_call(w, name, args, ret.as_ref(), ctx, scratch)?;
         }
         MirInst::CallIndirect {

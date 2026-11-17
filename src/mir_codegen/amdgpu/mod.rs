@@ -523,10 +523,11 @@ impl Kernel {
             Instruction::Ret { value: None } | Instruction::Unreachable => {
                 writeln!(self.body, "    s_endpgm")?
             }
-            Instruction::Call { name, args, ret, .. }
-                if args.is_empty()
-                    && ret.is_none()
-                    && GpuIntrinsic::from_name(name) == Some(GpuIntrinsic::WorkgroupBarrier) =>
+            Instruction::Call {
+                name, args, ret, ..
+            } if args.is_empty()
+                && ret.is_none()
+                && GpuIntrinsic::from_name(name) == Some(GpuIntrinsic::WorkgroupBarrier) =>
             {
                 match self.target {
                     AmdGpuTarget::Gfx900 => writeln!(

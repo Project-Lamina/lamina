@@ -1501,7 +1501,9 @@ impl fmt::Display for Instruction {
                 }
                 write!(f, "] default {default}")
             }
-            Instruction::Call { name, args, ret, .. } => {
+            Instruction::Call {
+                name, args, ret, ..
+            } => {
                 if let Some(r) = ret {
                     write!(f, "{r} = call {name}(")?;
                 } else {

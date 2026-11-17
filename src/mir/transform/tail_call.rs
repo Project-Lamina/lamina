@@ -146,7 +146,10 @@ impl TailCallOptimization {
                 let second_last_idx = block.instructions.len() - 2;
                 let second_last_instr = &block.instructions[second_last_idx];
 
-                if let Instruction::Call { name, args, ret, .. } = &second_last_instr.instr {
+                if let Instruction::Call {
+                    name, args, ret, ..
+                } = &second_last_instr.instr
+                {
                     // Check if this is a tail call (return value matches call result)
                     if !args.iter().any(
                         |arg| matches!(arg, Operand::Register(r) if stack_addresses.contains(r)),
@@ -179,7 +182,10 @@ impl TailCallOptimization {
 
     /// Convert a regular call to a tail call (jump)
     fn convert_to_tail_call(&self, instr: &mut Instruction) -> bool {
-        if let Instruction::Call { name, args, ret: _, .. } = instr {
+        if let Instruction::Call {
+            name, args, ret: _, ..
+        } = instr
+        {
             // Convert the Call instruction to a TailCall instruction
             let call_name = name.clone();
             let call_args = args.clone();
