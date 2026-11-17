@@ -759,6 +759,20 @@ fn load_argument_float<W: Write>(
     }
 }
 
+/// A C callee may leave the bits above a narrow return undefined, so the value is
+/// widened before the caller reads it. A bool is zero-extended, as everywhere else.
+fn widen_call_result<W: Write>(
+    writer: &mut W,
+    ret_ty: Option<&MirType>,
+) -> Result<(), LaminaError> {
+    match ret_ty {
+        Some(ty @ MirType::Scalar(ScalarType::I1)) => extend_integer(writer, A0, ty, false)?,
+        Some(ty) => extend_integer(writer, A0, ty, true)?,
+        None => {}
+    }
+    Ok(())
+}
+
 /// Stores a call's result into its destination: `%r2`, or `%f0` when the callee returns
 /// a float.
 fn store_call_result<W: Write>(
@@ -1061,8 +1075,21 @@ fn emit_instruction<W: Write>(
             }
             writeln!(writer, "    jg {}", ctx.block_label(default))?;
         }
-        MirInst::Call { name, args, ret, .. } => {
-            emit_call(name, args, ret.as_ref(), writer, slots, ctx)?;
+        MirInst::Call {
+            name,
+            args,
+            ret,
+            ret_ty,
+        } => {
+            emit_call(
+                name,
+                args,
+                ret.as_ref(),
+                ret_ty.as_ref(),
+                writer,
+                slots,
+                ctx,
+            )?;
         }
         MirInst::CallIndirect {
             target,
@@ -1121,7 +1148,7 @@ fn emit_instruction<W: Write>(
                     "s390x tail call passing or returning an aggregate",
                 ));
             }
-            emit_call(name, args, None, writer, slots, ctx)?;
+            emit_call(name, args, None, None, writer, slots, ctx)?;
             abi::epilogue(writer, ctx.aligned, None)?;
         }
         MirInst::FloatBinary {
@@ -1529,6 +1556,7 @@ fn emit_call<W: Write>(
     name: &str,
     args: &[Operand],
     ret: Option<&Register>,
+    ret_ty: Option<&MirType>,
     writer: &mut W,
     slots: &Slots,
     ctx: &mut EmitCtx<'_>,
@@ -1632,6 +1660,9 @@ fn emit_call<W: Write>(
         "    brasl %r14, {}",
         call_target(name, ctx.target_os)
     )?;
+    if ret.is_some() {
+        widen_call_result(writer, ret_ty)?;
+    }
     match (ret, result) {
         (_, Some(aggregate)) if aggregate.size > WORD as usize || aggregate.is_composite() => {}
         (Some(dst), Some(_)) => {

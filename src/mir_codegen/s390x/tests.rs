@@ -396,3 +396,56 @@ fn an_aggregate_of_an_odd_size_travels_by_reference() {
         assert!(kind.by_reference(), "{size} bytes travels by reference");
     }
 }
+
+fn module_calling_external(ty: MirType) -> crate::mir::Module {
+    use crate::mir::{FunctionBuilder, Instruction, Module, Operand, Register, VirtualReg};
+    let reg = Register::Virtual(VirtualReg::gpr(0));
+    let caller = FunctionBuilder::new("caller")
+        .returns(ty)
+        .block("entry")
+        .instr(Instruction::Call {
+            name: "ext".to_string(),
+            args: Vec::new(),
+            ret: Some(reg.clone()),
+            ret_ty: Some(ty),
+        })
+        .instr(Instruction::Ret {
+            value: Some(Operand::Register(reg)),
+        })
+        .build();
+    let mut module = Module::new("narrow_result");
+    module.add_function(caller);
+    module
+}
+
+#[test]
+fn narrow_external_results_are_widened_after_the_call() {
+    use crate::mir::MirType;
+    use lamina_platform::TargetOperatingSystem;
+    for (ty, extend) in [
+        (ScalarType::I1, "llgcr %r2, %r2"),
+        (ScalarType::I8, "lgbr %r2, %r2"),
+        (ScalarType::I16, "lghr %r2, %r2"),
+        (ScalarType::I32, "lgfr %r2, %r2"),
+    ] {
+        let module = module_calling_external(MirType::Scalar(ty));
+        let mut out = Vec::new();
+        super::generate_mir_s390x_with_units_and_settings(
+            &module,
+            &mut out,
+            TargetOperatingSystem::Linux,
+            1,
+            &MirCodegenSettings::default(),
+        )
+        .expect("codegen");
+        let assembly = String::from_utf8(out).expect("utf8");
+        let after_call = assembly
+            .split("brasl %r14, ext")
+            .nth(1)
+            .expect("call emitted");
+        assert!(
+            after_call.starts_with(&format!("\n    {extend}\n")),
+            "{assembly}"
+        );
+    }
+}
