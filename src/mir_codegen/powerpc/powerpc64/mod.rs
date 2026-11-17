@@ -1393,7 +1393,7 @@ fn emit_instruction_ppc64<W: Write>(
             }
             writeln!(writer, "    b {block_prefix}{default}")?;
         }
-        MirInst::Call { name, args, ret } => {
+        MirInst::Call { name, args, ret, .. } => {
             let abi = Ppc64Abi::new(target_os);
             let arg_regs = Ppc64Abi::ARG_REGISTERS;
             let result = aggregates.result(name);

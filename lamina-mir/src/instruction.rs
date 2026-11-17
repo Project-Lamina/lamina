@@ -867,6 +867,8 @@ pub enum Instruction {
         name: String,
         args: Vec<Operand>,
         ret: Option<Register>,
+        /// Type of the returned value. `None` when the call returns nothing.
+        ret_ty: Option<MirType>,
     },
 
     /// Call through a pointer. The argument and return types travel with the
@@ -1499,7 +1501,7 @@ impl fmt::Display for Instruction {
                 }
                 write!(f, "] default {default}")
             }
-            Instruction::Call { name, args, ret } => {
+            Instruction::Call { name, args, ret, .. } => {
                 if let Some(r) = ret {
                     write!(f, "{r} = call {name}(")?;
                 } else {

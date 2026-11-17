@@ -146,7 +146,7 @@ impl TailCallOptimization {
                 let second_last_idx = block.instructions.len() - 2;
                 let second_last_instr = &block.instructions[second_last_idx];
 
-                if let Instruction::Call { name, args, ret } = &second_last_instr.instr {
+                if let Instruction::Call { name, args, ret, .. } = &second_last_instr.instr {
                     // Check if this is a tail call (return value matches call result)
                     if !args.iter().any(
                         |arg| matches!(arg, Operand::Register(r) if stack_addresses.contains(r)),
@@ -179,7 +179,7 @@ impl TailCallOptimization {
 
     /// Convert a regular call to a tail call (jump)
     fn convert_to_tail_call(&self, instr: &mut Instruction) -> bool {
-        if let Instruction::Call { name, args, ret: _ } = instr {
+        if let Instruction::Call { name, args, ret: _, .. } = instr {
             // Convert the Call instruction to a TailCall instruction
             let call_name = name.clone();
             let call_args = args.clone();
@@ -377,6 +377,7 @@ mod tests {
                             name: name.into(),
                             args: vec![operand(argument)],
                             ret: Some(reg(10)),
+                            ret_ty: Some(MirType::Scalar(ScalarType::I64)),
                         },
                         Instruction::Ret {
                             value: Some(operand(10)),
@@ -401,6 +402,7 @@ mod tests {
                 name: "__lamina_gpu_workgroup_barrier".into(),
                 args: vec![],
                 ret: None,
+                ret_ty: None,
             })
             .instr(Instruction::Ret { value: None })
             .build();
@@ -442,6 +444,7 @@ mod tests {
             name: "factorial".to_string(),
             args: vec![Operand::Register(VirtualReg::gpr(0).into())],
             ret: Some(VirtualReg::gpr(1).into()),
+            ret_ty: Some(MirType::Scalar(ScalarType::I64)),
         };
 
         let changed = tco.convert_to_tail_call(&mut instr);
@@ -468,6 +471,7 @@ mod tests {
                 name: "factorial".to_string(),
                 args: vec![Operand::Register(VirtualReg::gpr(0).into())],
                 ret: Some(VirtualReg::gpr(1).into()),
+                ret_ty: Some(MirType::Scalar(ScalarType::I64)),
             })
             // Return the result
             .instr(Instruction::Ret {
@@ -496,6 +500,7 @@ mod tests {
                 name: "other_func".to_string(),
                 args: vec![],
                 ret: Some(VirtualReg::gpr(0).into()),
+                ret_ty: Some(MirType::Scalar(ScalarType::I64)),
             })
             // Do something with the result
             .instr(Instruction::IntBinary {
@@ -542,7 +547,8 @@ mod tests {
             .instr(Instruction::Call {
                 name: callee.into(),
                 args: vec![Operand::Register(VirtualReg::gpr(0).into())],
-                ret: call_ret,
+                ret: call_ret.clone(),
+                ret_ty: call_ret.and(caller_ret),
             })
             .instr(Instruction::Ret { value: ret_value })
             .build()

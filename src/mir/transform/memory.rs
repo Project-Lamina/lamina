@@ -474,6 +474,7 @@ mod tests {
             })
             .instr(Instruction::Call {
                 ret: Some(result),
+                ret_ty: Some(MirType::Scalar(ScalarType::I64)),
                 name: "side_effect".to_owned(),
                 args: vec![],
             })

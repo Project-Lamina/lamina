@@ -322,6 +322,7 @@ mod tests {
                 name: callee.to_string(),
                 args: vec![],
                 ret: None,
+                ret_ty: None,
             })
             .instr(Instruction::Ret { value: None })
             .build();

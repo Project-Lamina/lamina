@@ -746,6 +746,30 @@ struct ValueFacts<'t, 'a> {
     pointer_aligns: &'t PointerAligns<'a>,
 }
 
+/// The type a direct call to an IR function hands back: a pointer for an aggregate, and
+/// nothing for a void or zero-sized return.
+fn direct_call_ret_ty(
+    name: &str,
+    module: &IRModule<'_>,
+    layout: TargetDataLayout,
+    int64_regs: bool,
+) -> Result<Option<MirType>, FromIRError> {
+    let Some(callee) = module.functions.get(name) else {
+        return Ok(io_intrinsic_result_type(name, int64_regs));
+    };
+    let returned = &callee.signature.return_type;
+    if matches!(returned, IRType::Void) || zero_sized(returned, module, layout) {
+        return Ok(None);
+    }
+    if let Some(resolved) = resolve_type_names(returned, &module.type_declarations)
+        && classify_aggregate(&resolved, &format!("return of @{name}"), layout, int64_regs)?
+            .is_some()
+    {
+        return Ok(Some(MirType::Scalar(ScalarType::Ptr)));
+    }
+    Ok(map_ir_type(returned, layout).ok())
+}
+
 fn conflicting_definitions(name: &str) -> FromIRError {
     FromIRError::ConflictingDefinitions(name.to_string())
 }
@@ -1522,6 +1546,11 @@ fn convert_function<'a>(
                 var_to_reg.insert(result, fresh);
             }
             for mut mir_instr in mir_instrs {
+                if let Instruction::Call { name, ret_ty, .. } = &mut mir_instr
+                    && module.functions.contains_key(name.as_str())
+                {
+                    *ret_ty = direct_call_ret_ty(name, module, layout, int64_regs)?;
+                }
                 let mut result_address = None;
                 if let Instruction::Call {
                     name, ret: Some(_), ..
@@ -2315,6 +2344,7 @@ fn convert_instruction<'a>(
                 name: (*func_name).to_string(),
                 args: mir_args,
                 ret,
+                ret_ty: None,
             });
             if let Some(res) = result.filter(|_| zero_return) {
                 let dst = resolve_or_alloc(res, vreg_alloc, var_to_reg);
@@ -2780,6 +2810,7 @@ fn convert_instruction<'a>(
                 name: "lamina.write".to_string(),
                 args: vec![buf, sz],
                 ret: Some(dst),
+                ret_ty: io_intrinsic_result_type("lamina.write", layout.has_64bit_int_registers()),
             }])
         }
         IRInst::WriteByte { value, result } => {
@@ -2789,6 +2820,7 @@ fn convert_instruction<'a>(
                 name: "lamina.writebyte".to_string(),
                 args: vec![v],
                 ret: Some(dst),
+                ret_ty: io_intrinsic_result_type("lamina.writebyte", layout.has_64bit_int_registers()),
             }])
         }
         IRInst::ReadByte { result } => {
@@ -2797,6 +2829,7 @@ fn convert_instruction<'a>(
                 name: "lamina.readbyte".to_string(),
                 args: vec![],
                 ret: Some(dst),
+                ret_ty: io_intrinsic_result_type("lamina.readbyte", layout.has_64bit_int_registers()),
             }])
         }
         IRInst::Read {
@@ -2811,6 +2844,7 @@ fn convert_instruction<'a>(
                 name: "lamina.read".to_string(),
                 args: vec![buf, sz],
                 ret: Some(dst),
+                ret_ty: io_intrinsic_result_type("lamina.read", layout.has_64bit_int_registers()),
             }])
         }
         IRInst::VaStart { ap } => Ok(vec![Instruction::VaStart {

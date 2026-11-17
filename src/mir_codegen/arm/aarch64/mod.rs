@@ -2321,7 +2321,7 @@ fn emit_block<W: Write>(
                     )?;
                 }
             }
-            MirInst::Call { name, args, ret } => {
+            MirInst::Call { name, args, ret, .. } => {
                 if name == "lamina.writebyte" && args.len() == 1 {
                     match abi.target_os() {
                         os if os_uses_macho(os) => {

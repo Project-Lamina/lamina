@@ -279,6 +279,7 @@ mod tests {
             name: "probe".to_owned(),
             args: vec![Operand::Register(reg(0))],
             ret: Some(reg(1)),
+            ret_ty: Some(MirType::Scalar(ScalarType::I64)),
         }]);
         assert!(!apply_pass(&LoopRotation, &mut func));
         assert!(matches!(

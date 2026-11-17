@@ -576,6 +576,14 @@ fn verify_instruction_types(
                                 &mut instruction_errors,
                             );
                         }
+                        if let Instruction::Call { ret_ty, .. } = instruction
+                            && *ret_ty != callee.sig.ret_ty
+                        {
+                            instruction_errors.push(format!(
+                                "expected call '{name}' to declare result {:?} but it returns {:?}",
+                                ret_ty, callee.sig.ret_ty
+                            ));
+                        }
                         match instruction {
                             Instruction::Call { ret: Some(dst), .. } => match callee.sig.ret_ty {
                                 Some(ty) => verify_destination(dst, ty, "call result", config, &mut instruction_errors),
@@ -1412,6 +1420,7 @@ mod tests {
                     name: "callee".into(),
                     args: vec![Operand::v_gpr(0)],
                     ret: Some(VirtualReg::gpr(1).into()),
+                    ret_ty: Some(MirType::Scalar(ScalarType::I32)),
                 }
             };
             let mut caller = FunctionBuilder::new("caller")
@@ -1463,6 +1472,7 @@ mod tests {
                     name: "callee".into(),
                     args: vec![],
                     ret: Some(VirtualReg::gpr(0).into()),
+                    ret_ty: None,
                 })
                 .instr(Instruction::Ret { value: None })
                 .build(),

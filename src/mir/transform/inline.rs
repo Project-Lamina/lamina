@@ -161,6 +161,7 @@ impl ModuleInlining {
                 continue;
             };
             let returns = caller.sig.ret_ty.is_some();
+            let ret_ty = caller.sig.ret_ty;
             let id = next_virtual_id(caller);
             let block = &mut caller.blocks[block_index];
             let Some(last) = block.instructions.pop() else {
@@ -176,6 +177,7 @@ impl ModuleInlining {
                     name: callee,
                     args,
                     ret: result.clone(),
+                    ret_ty,
                 },
                 last.loc,
             ));
@@ -856,6 +858,7 @@ ret.void
                 name: "callee".to_string(),
                 args: vec![Operand::Immediate(Immediate::I64(10))],
                 ret: Some(VirtualReg::gpr(1).into()),
+                ret_ty: Some(MirType::Scalar(ScalarType::I64)),
             })
             .instr(Instruction::Ret {
                 value: Some(Operand::Register(VirtualReg::gpr(1).into())),
@@ -1029,6 +1032,7 @@ mod inline_hint_tests {
                 name: "middle".to_string(),
                 args: vec![Operand::Register(reg(0))],
                 ret: Some(reg(1)),
+                ret_ty: Some(MirType::Scalar(ScalarType::I64)),
             })
             .instr(Instruction::Ret {
                 value: Some(Operand::Register(reg(1))),

@@ -1061,7 +1061,7 @@ fn emit_instruction<W: Write>(
             }
             writeln!(writer, "    jg {}", ctx.block_label(default))?;
         }
-        MirInst::Call { name, args, ret } => {
+        MirInst::Call { name, args, ret, .. } => {
             emit_call(name, args, ret.as_ref(), writer, slots, ctx)?;
         }
         MirInst::CallIndirect {

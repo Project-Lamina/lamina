@@ -597,6 +597,7 @@ mod tests {
             name: "sink".into(),
             args: vec![Operand::Register(value(3))],
             ret: None,
+            ret_ty: None,
         }]);
         assert!(!apply_pass(&ScalarReplacement, &mut func));
         assert!(has_lea(&func));

@@ -523,7 +523,7 @@ impl Kernel {
             Instruction::Ret { value: None } | Instruction::Unreachable => {
                 writeln!(self.body, "    s_endpgm")?
             }
-            Instruction::Call { name, args, ret }
+            Instruction::Call { name, args, ret, .. }
                 if args.is_empty()
                     && ret.is_none()
                     && GpuIntrinsic::from_name(name) == Some(GpuIntrinsic::WorkgroupBarrier) =>
@@ -543,6 +543,7 @@ impl Kernel {
                 name,
                 args,
                 ret: Some(dst),
+                ..
             } if args.is_empty() => {
                 let intrinsic = GpuIntrinsic::from_name(name)
                     .ok_or_else(|| error("unsupported AMDGPU call"))?;

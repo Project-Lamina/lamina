@@ -172,6 +172,7 @@ fn random_program(rng: &mut Rng) -> (Function, Layout, Vec<u64>) {
                 name: "opaque".to_owned(),
                 args: Vec::new(),
                 ret: None,
+                ret_ty: None,
             },
         };
         instructions.push(inst);

@@ -600,6 +600,7 @@ mod tests {
                 name: "sink".into(),
                 args: vec![Operand::Register(ptr())],
                 ret: None,
+                ret_ty: None,
             })
             .instr(load(i64(), value(3), at(ptr())))
             .instr(ret(value(3)))

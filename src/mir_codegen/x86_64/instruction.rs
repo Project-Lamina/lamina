@@ -1335,7 +1335,7 @@ pub(super) fn emit_instruction_x86_64(
                 reg_alloc.free_scratch(scratch);
             }
         }
-        MirInst::Call { name, args, ret } => {
+        MirInst::Call { name, args, ret, .. } => {
             if name == "lamina.writebyte" && args.len() == 1 {
                 let arg = args.first().ok_or_else(|| {
                     LaminaError::ValidationError("writebyte requires one argument".to_string())
@@ -1959,6 +1959,7 @@ pub(super) fn emit_instruction_x86_64(
                         name: name.clone(),
                         args: args.clone(),
                         ret: None,
+                        ret_ty: None,
                     },
                     writer,
                     reg_alloc,

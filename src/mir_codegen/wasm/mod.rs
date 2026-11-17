@@ -1468,7 +1468,7 @@ fn emit_instruction_wasm(
                 store_to_register_wasm(&Register::Virtual(*vreg), writer, vreg_to_local)?;
             }
         }
-        MirInst::Call { name, args, ret } => {
+        MirInst::Call { name, args, ret, .. } => {
             let shape = addresses.imports.get(name);
             for (index, arg) in args.iter().enumerate() {
                 load_operand_wasm(arg, writer, vreg_to_local)?;

@@ -226,6 +226,7 @@ mod tests {
             name: "callee".to_string(),
             args,
             ret: None,
+            ret_ty: None,
         });
         eb.push(Instruction::Ret { value: None });
         caller.add_block(eb);

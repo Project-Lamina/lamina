@@ -528,6 +528,7 @@ mod tests {
                 name: "lamina.writebyte".to_string(),
                 args: vec![Operand::Immediate(Immediate::I64(1))],
                 ret: None,
+                ret_ty: None,
             })
             .instr(Instruction::Ret {
                 value: Some(Operand::Immediate(Immediate::I64(0))),

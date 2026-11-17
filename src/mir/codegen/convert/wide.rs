@@ -941,6 +941,7 @@ impl<'c, 'a> Cx<'c, 'a> {
             name,
             args,
             ret: Some(Register::Virtual(slot)),
+            ret_ty: Some(MirType::Scalar(ScalarType::Ptr)),
         });
         let address = self.temp();
         self.out.push(Instruction::StackAddr {
@@ -1654,6 +1655,7 @@ pub(super) fn lower_instruction<'a>(
                     name: (*func_name).to_string(),
                     args: mir_args,
                     ret: Some(placeholder.clone()),
+                    ret_ty: None,
                 });
                 if let Some(result) = result {
                     let loaded = cx.load_words(placeholder, returned);
@@ -1673,6 +1675,7 @@ pub(super) fn lower_instruction<'a>(
                     name: (*func_name).to_string(),
                     args: mir_args,
                     ret,
+                    ret_ty: None,
                 });
                 if let Some(name) = result.filter(|_| zero_return) {
                     let dst = resolve_or_alloc(name, cx.vregs, cx.vars);
@@ -1881,6 +1884,7 @@ pub(super) fn lower_instruction<'a>(
                 name,
                 args: vec![arg],
                 ret: Some(dst),
+                ret_ty: Some(ret_ty),
             });
         }
         IRInst::FloatToInt {
@@ -2211,6 +2215,7 @@ fn io_call<'a>(cx: &mut Cx<'_, 'a>, name: &str, args: Vec<Operand>, result: &'a 
         name: name.to_string(),
         args,
         ret: Some(into[0].clone()),
+        ret_ty: io_intrinsic_result_type(name, cx.int64_regs),
     });
     let top = cx.imm(cx.bits() - 1);
     let hi = cx.bin(IntBinOp::AShr, Operand::Register(into[0].clone()), top);

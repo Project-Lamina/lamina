@@ -1704,7 +1704,7 @@ fn emit_instruction_riscv<W: Write>(
                 store_register_to_register("a0", vreg, writer, reg_alloc, stack_slots)?;
             }
         }
-        MirInst::Call { name, args, ret } => {
+        MirInst::Call { name, args, ret, .. } => {
             let abi = RiscVAbi::new(target_os);
             let live_vregs = ctx
                 .live_across_calls

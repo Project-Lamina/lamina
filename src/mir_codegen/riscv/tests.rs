@@ -635,6 +635,7 @@ fn caller_saved_value_live_across_call_is_spilled_and_reloaded() -> Result<(), B
             name: "callee".to_string(),
             args: Vec::new(),
             ret: None,
+            ret_ty: None,
         })
         .instr(MirInst::IntBinary {
             op: IntBinOp::Add,

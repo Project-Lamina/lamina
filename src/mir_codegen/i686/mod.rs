@@ -809,7 +809,7 @@ fn emit_instruction<W: Write>(
             }
             writeln!(writer, "    jmp {}", ctx.block_label(default))?;
         }
-        MirInst::Call { name, args, ret } => {
+        MirInst::Call { name, args, ret, .. } => {
             if emit_builtin(name, args, ret.as_ref(), writer, slots, ctx)? {
                 return Ok(());
             }

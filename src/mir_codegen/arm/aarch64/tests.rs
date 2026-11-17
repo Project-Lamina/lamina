@@ -1586,6 +1586,7 @@ fn function_with_values_live_across_a_call() -> Function {
         name: "g".into(),
         args: vec![Operand::Immediate(Immediate::I64(1))],
         ret: Some(Register::Virtual(VirtualReg::gpr(50))),
+        ret_ty: Some(MirType::Scalar(ScalarType::I64)),
     });
     let mut acc = Operand::Register(Register::Virtual(VirtualReg::gpr(50)));
     for (step, reg) in live.iter().enumerate() {

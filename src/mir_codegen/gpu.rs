@@ -77,7 +77,7 @@ pub(super) fn error(message: &str) -> LaminaError {
 mod tests {
     use super::*;
     use crate::{
-        mir::{FunctionBuilder, Register, VirtualReg},
+        mir::{FunctionBuilder, MirType, Register, ScalarType, VirtualReg},
         mir_codegen::{amdgpu, ptx},
     };
 
@@ -100,6 +100,7 @@ mod tests {
                 name: "__lamina_gpu_workgroup_barrier".into(),
                 args: vec![],
                 ret: None,
+                ret_ty: None,
             },
             Instruction::Ret { value: None },
         ]);
@@ -125,6 +126,7 @@ mod tests {
                 name: "__lamina_gpu_thread_id_x".into(),
                 args: vec![],
                 ret: Some(Register::Virtual(VirtualReg::gpr(4000))),
+                ret_ty: Some(MirType::Scalar(ScalarType::I32)),
             },
             Instruction::Ret { value: None },
         ]);
@@ -146,6 +148,7 @@ mod tests {
                 name: "lamina.writebyte".into(),
                 args: vec![],
                 ret: None,
+                ret_ty: None,
             },
             Instruction::Ret { value: None },
         ]);
