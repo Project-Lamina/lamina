@@ -25,6 +25,7 @@ use std::{cmp::min, slice};
 #[cfg(feature = "encoder")]
 use crate::mir_codegen::validate_module_call_parameters;
 use crate::{error::LaminaError, mir::Module as MirModule};
+use lamina_ir::module::Module as IrModule;
 use lamina_platform::{TargetArchitecture, TargetOperatingSystem};
 
 // Re-export ras types for convenience
@@ -281,7 +282,7 @@ pub fn compile_to_runtime(
 /// its own that matches the AOT backends' results for them, so the whole module falls back
 /// to AOT. The walk reads the parsed IR, where those types still exist; MIR has no marker
 /// for them.
-pub(crate) fn wide_integer_refusal(module: &lamina_ir::module::Module<'_>) -> Option<String> {
+pub(crate) fn wide_integer_refusal(module: &IrModule<'_>) -> Option<String> {
     wide_refusal::first_wide_integer(module).map(|token| {
         format!(
             "--jit does not run modules that use {token} values: the JIT cannot match the AOT result for them"
