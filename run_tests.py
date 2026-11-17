@@ -399,6 +399,7 @@ JIT_TESTCASES = {
     'aggregate_load_store.lamina', 'arithmetic.lamina',
     'binary_op_rhs_in_destination.lamina', 'call_typed_arguments.lamina',
     'calling_convention_bug_test.lamina', 'capable_lamina.lamina',
+    'callptr_float_literal.lamina', 'callptr_variadic.lamina',
     'checked_arithmetic.lamina', 'complex_arithmetic.lamina',
     'conditionals.lamina', 'constants.lamina',
     'dealloc_stack_vs_heap_bug_test.lamina', 'debug_printing.lamina',
@@ -413,10 +414,12 @@ JIT_TESTCASES = {
     'floating_point_register_bug_test.lamina', 'fptoint_signed.lamina',
     'function_annotations.lamina', 'function_call_isolation.lamina',
     'function_placement_annotations.lamina', 'functions.lamina',
+    'function_pointers.lamina',
     'gep_element_size_bug_test.lamina',
     'gep_element_size_comprehensive_bug_test.lamina',
     'gep_variable_indices.lamina', 'getfieldptr_offset_bug_test.lamina',
     'getfieldptr_param_layout.lamina', 'global_element_list.lamina',
+    'global_function_address.lamina',
     'global_literal_fills_slot.lamina', 'global_nested_init.lamina',
     'global_pointer_addend.lamina', 'global_pointer_fields.lamina',
     'global_pointer_relocation.lamina', 'global_readonly_string.lamina',
@@ -462,6 +465,7 @@ JIT_TESTCASES = {
     'unreachable_terminator.lamina', 'variables.lamina',
     'variadic_wide_argument.lamina', 'void_tail_print.lamina',
     'volatile_access.lamina',
+    'zero_size_aggregates.lamina',
 }
 
 def jit_host_problem():
