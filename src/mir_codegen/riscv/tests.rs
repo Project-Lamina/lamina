@@ -696,6 +696,42 @@ fn caller_saved_value_live_across_call_is_spilled_and_reloaded() -> Result<(), B
 }
 
 #[test]
+fn narrow_external_result_is_sign_extended_after_the_call() -> Result<(), Box<dyn Error>> {
+    let ty = MirType::Scalar(ScalarType::I32);
+    let result = Register::Virtual(VirtualReg::gpr(0));
+    let caller = FunctionBuilder::new("caller")
+        .returns(ty)
+        .block("entry")
+        .instr(MirInst::Call {
+            name: "callee".to_string(),
+            args: Vec::new(),
+            ret: Some(result.clone()),
+            ret_ty: Some(ty),
+        })
+        .instr(MirInst::Ret {
+            value: Some(Operand::Register(result)),
+        })
+        .build();
+    let mut module = MirModule::new("narrow_return");
+    module.add_function(caller);
+    let mut output = Vec::new();
+    generate_mir_riscv_with_units_and_settings(
+        &module,
+        &mut output,
+        RiscVTarget::general(Xlen::Rv64),
+        TargetOperatingSystem::Linux,
+        1,
+        &MirCodegenSettings::default(),
+    )?;
+    let assembly = String::from_utf8(output)?;
+    assert!(
+        assembly.contains("call callee\n    slli a0, a0, 32\n    srai a0, a0, 32\n"),
+        "{assembly}"
+    );
+    Ok(())
+}
+
+#[test]
 fn globally_allocated_callee_saved_register_is_saved_by_frame() -> Result<(), Box<dyn Error>> {
     let ty = MirType::Scalar(ScalarType::I64);
     let value = Register::Virtual(VirtualReg::gpr(0));

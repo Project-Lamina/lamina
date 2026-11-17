@@ -1704,7 +1704,12 @@ fn emit_instruction_riscv<W: Write>(
                 store_register_to_register("a0", vreg, writer, reg_alloc, stack_slots)?;
             }
         }
-        MirInst::Call { name, args, ret, .. } => {
+        MirInst::Call {
+            name,
+            args,
+            ret,
+            ret_ty,
+        } => {
             let abi = RiscVAbi::new(target_os);
             let live_vregs = ctx
                 .live_across_calls
@@ -1852,6 +1857,11 @@ fn emit_instruction_riscv<W: Write>(
             reload_caller_saved(writer, &caller_saved_mappings, stack_slots, ctx.target)?;
 
             // Handle return value: a0, or fa0 when the callee returns a float.
+            match ret_ty {
+                Some(MirType::Scalar(ScalarType::I1)) => writeln!(writer, "    andi a0, a0, 1")?,
+                Some(ty) => extend_integer(writer, "a0", ty, ctx.target, true, pointer_width)?,
+                None => {}
+            }
             if let Some(ret_reg) = ret
                 && let Register::Virtual(vreg) = ret_reg
             {
