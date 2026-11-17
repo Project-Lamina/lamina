@@ -743,6 +743,23 @@ fn pass_arguments<W: Write>(
     Ok(())
 }
 
+/// A C callee may leave the bits above a narrow return undefined, so the value is
+/// widened before the caller reads it. An `i32` return needs nothing: the N64 ABI keeps
+/// 32-bit values sign-extended in their 64-bit registers.
+fn widen_call_result<W: Write>(
+    writer: &mut W,
+    ret_ty: Option<&MirType>,
+) -> Result<(), LaminaError> {
+    match ret_ty {
+        Some(MirType::Scalar(ScalarType::I1)) => writeln!(writer, "    andi {A0}, {A0}, 1")?,
+        Some(ty @ MirType::Scalar(ScalarType::I8 | ScalarType::I16)) => {
+            extend_integer(writer, A0, ty, true)?
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 /// Stores a call's result into its destination: `$2`, or `$f0` when the callee returns
 /// a float.
 fn store_call_result<W: Write>(
@@ -1046,8 +1063,21 @@ fn emit_instruction<W: Write>(
             writeln!(writer, "    j {}", ctx.block_label(default))?;
             writeln!(writer, "    nop")?;
         }
-        MirInst::Call { name, args, ret, .. } => {
-            emit_call(name, args, ret.as_ref(), writer, slots, ctx)?;
+        MirInst::Call {
+            name,
+            args,
+            ret,
+            ret_ty,
+        } => {
+            emit_call(
+                name,
+                args,
+                ret.as_ref(),
+                ret_ty.as_ref(),
+                writer,
+                slots,
+                ctx,
+            )?;
         }
         MirInst::CallIndirect {
             target,
@@ -1090,7 +1120,7 @@ fn emit_instruction<W: Write>(
                     "mips64 tail call passing or returning an aggregate",
                 ));
             }
-            emit_call(name, args, None, writer, slots, ctx)?;
+            emit_call(name, args, None, None, writer, slots, ctx)?;
             abi::epilogue(writer, None)?;
         }
         MirInst::FloatBinary {
@@ -1563,6 +1593,7 @@ fn emit_call<W: Write>(
     name: &str,
     args: &[Operand],
     ret: Option<&Register>,
+    ret_ty: Option<&MirType>,
     writer: &mut W,
     slots: &Slots,
     ctx: &mut EmitCtx<'_>,
@@ -1662,6 +1693,9 @@ fn emit_call<W: Write>(
         ctx.signatures.variadic_from(name),
     )?;
     emit_direct_call(writer, name, ctx.target_os)?;
+    if ret.is_some() {
+        widen_call_result(writer, ret_ty)?;
+    }
     match (ret, result) {
         (_, Some(aggregate)) if aggregate.size > MAX_REGISTER_RETURN => {}
         (Some(_), Some(aggregate)) => {
