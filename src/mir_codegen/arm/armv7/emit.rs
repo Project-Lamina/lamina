@@ -475,9 +475,12 @@ pub(crate) fn emit_instruction<W: Write>(
         }
 
         MirInst::Call {
-            name, args, ret, ..
+            name,
+            args,
+            ret,
+            ret_ty,
         } => {
-            call::emit_call(w, name, args, ret.as_ref(), ctx, scratch)?;
+            call::emit_call(w, name, args, ret.as_ref(), ret_ty.as_ref(), ctx, scratch)?;
         }
         MirInst::CallIndirect {
             target,
