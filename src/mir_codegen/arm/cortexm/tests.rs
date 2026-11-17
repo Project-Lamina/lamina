@@ -22,6 +22,57 @@ fn try_compile(arch: TargetArchitecture, source: &str) -> Result<String, String>
     Ok(String::from_utf8(out).expect("utf8"))
 }
 
+#[test]
+fn narrow_external_results_are_widened_after_the_call() {
+    for (ty, extend) in [
+        (ScalarType::I1, Some("uxtb r0, r0")),
+        (ScalarType::I8, Some("sxtb r0, r0")),
+        (ScalarType::I16, Some("sxth r0, r0")),
+        (ScalarType::I32, None),
+    ] {
+        let reg = crate::mir::Register::Virtual(lamina_mir::VirtualReg::gpr(0));
+        let ty = MirType::Scalar(ty);
+        let caller = crate::mir::FunctionBuilder::new("caller")
+            .returns(ty)
+            .block("entry")
+            .instr(MirInst::Call {
+                name: "ext".to_string(),
+                args: Vec::new(),
+                ret: Some(reg.clone()),
+                ret_ty: Some(ty),
+            })
+            .instr(MirInst::Ret {
+                value: Some(crate::mir::Operand::Register(reg)),
+            })
+            .build();
+        let mut module = crate::mir::Module::new("narrow_result");
+        module.add_function(caller);
+        let mut out = Vec::new();
+        generate_mir_cortexm_with_units_and_settings(
+            &module,
+            &mut out,
+            TargetArchitecture::Thumbv7m,
+            TargetOperatingSystem::Linux,
+            1,
+            &MirCodegenSettings::default(),
+        )
+        .expect("codegen");
+        let assembly = String::from_utf8(out).expect("utf8");
+        let after_call = assembly.split("bl ext").nth(1).expect("call emitted");
+        let widening: Vec<&str> = after_call
+            .lines()
+            .take_while(|line| !line.contains("str"))
+            .filter(|line| line.contains("xt"))
+            .collect();
+        match extend {
+            Some(instruction) => {
+                assert_eq!(widening, vec![format!("    {instruction}")], "{assembly}")
+            }
+            None => assert!(widening.is_empty(), "{assembly}"),
+        }
+    }
+}
+
 fn compile(arch: TargetArchitecture, source: &str) -> String {
     try_compile(arch, source).expect("codegen")
 }

@@ -7,7 +7,7 @@ use std::io::Write;
 
 use crate::{
     error::LaminaError,
-    mir::{Aggregate, Function, Instruction as MirInst, MirType, Operand, Register},
+    mir::{Aggregate, Function, Instruction as MirInst, MirType, Operand, Register, ScalarType},
     mir_codegen::common::unsupported_io,
 };
 use lamina_codegen::abi::Abi;
@@ -15,7 +15,7 @@ use lamina_platform::TargetOperatingSystem;
 
 use super::emit::{Ctx, is_wide_integer, reject_wide};
 use super::isa::mov_imm;
-use super::operand::{Scratch, copy_through_pointer, unsupported};
+use super::operand::{Scratch, copy_through_pointer, extend_integer, unsupported};
 use crate::mir_codegen::arm::armv7::abi::{
     ArgKind, ArgPlace, Signatures, classify, returns_in_memory, stack_bytes,
 };
@@ -185,6 +185,17 @@ fn emit_register_arguments<W: Write>(
     Ok(())
 }
 
+/// A C callee may leave the bits above a narrow return undefined, so the value is
+/// widened in place before the caller reads it.
+fn widen_call_result<W: Write>(w: &mut W, ret_ty: Option<&MirType>) -> Result<(), LaminaError> {
+    match ret_ty {
+        Some(MirType::Scalar(ScalarType::I1)) => writeln!(w, "    uxtb r0, r0")?,
+        Some(ty) => extend_integer(w, "r0", ty, true)?,
+        None => {}
+    }
+    Ok(())
+}
+
 fn store_call_result<W: Write>(
     w: &mut W,
     ret: Option<&Register>,
@@ -219,6 +230,7 @@ pub(crate) fn emit_call<W: Write>(
     name: &str,
     args: &[Operand],
     ret: Option<&Register>,
+    ret_ty: Option<&MirType>,
     ctx: &Ctx<'_>,
     scratch: &mut Scratch,
 ) -> Result<(), LaminaError> {
@@ -257,6 +269,9 @@ pub(crate) fn emit_call<W: Write>(
 
     let target = ctx.abi.call_target(name);
     writeln!(w, "    bl {target}")?;
+    if ret.is_some() {
+        widen_call_result(w, ret_ty)?;
+    }
     store_call_result(w, ret, result, ctx, scratch)
 }
 
@@ -299,7 +314,7 @@ pub(crate) fn emit_tail_call<W: Write>(
     ctx: &Ctx<'_>,
     scratch: &mut Scratch,
 ) -> Result<(), LaminaError> {
-    emit_call(w, name, args, None, ctx, scratch)?;
+    emit_call(w, name, args, None, None, ctx, scratch)?;
     writeln!(w, "    b {}", ctx.epilogue)?;
     Ok(())
 }
