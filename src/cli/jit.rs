@@ -415,17 +415,8 @@ mod tests {
     use crate::cli::options::CompileOptions;
     use crate::cli::options::usage_text;
     use crate::mir_codegen::MirCodegenSettings;
-    use std::{fs::remove_file, path::Path, path::PathBuf};
-
-    fn lamina_binary() -> PathBuf {
-        let binary = format!("lamina{}", env::consts::EXE_SUFFIX);
-        env::current_exe()
-            .expect("test executable")
-            .ancestors()
-            .map(|dir| dir.join(&binary))
-            .find(|candidate| candidate.is_file())
-            .expect("build the binary first: cargo build --bin lamina")
-    }
+    use crate::test_support::lamina_binary;
+    use std::{fs::remove_file, path::Path};
 
     fn minimal_options() -> CompileOptions {
         CompileOptions {
