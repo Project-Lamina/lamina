@@ -474,6 +474,23 @@ fn pass_arguments<W: Write>(
     Ok(space)
 }
 
+/// A C callee may leave the bits above a narrow return undefined, so the value is
+/// widened before the caller reads it. An `i32` return needs nothing: the LP64 ABI keeps
+/// 32-bit values sign-extended in their 64-bit registers.
+fn widen_call_result<W: Write>(
+    writer: &mut W,
+    ret_ty: Option<&MirType>,
+) -> Result<(), LaminaError> {
+    match ret_ty {
+        Some(MirType::Scalar(ScalarType::I1)) => writeln!(writer, "    andi $a0, $a0, 1")?,
+        Some(ty @ MirType::Scalar(ScalarType::I8 | ScalarType::I16)) => {
+            extend_integer(writer, "$a0", ty, true)?
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 /// Stores a call's result into its destination: `$a0`, or `$fa0` when the callee returns
 /// a float.
 fn store_call_result<W: Write>(
@@ -784,8 +801,21 @@ fn emit_instruction<W: Write>(
             }
             writeln!(writer, "    b {}", ctx.block_label(default))?;
         }
-        MirInst::Call { name, args, ret, .. } => {
-            emit_call(name, args, ret.as_ref(), writer, slots, ctx)?;
+        MirInst::Call {
+            name,
+            args,
+            ret,
+            ret_ty,
+        } => {
+            emit_call(
+                name,
+                args,
+                ret.as_ref(),
+                ret_ty.as_ref(),
+                writer,
+                slots,
+                ctx,
+            )?;
         }
         MirInst::CallIndirect {
             target,
@@ -1101,6 +1131,7 @@ fn emit_call<W: Write>(
     name: &str,
     args: &[Operand],
     ret: Option<&Register>,
+    ret_ty: Option<&MirType>,
     writer: &mut W,
     slots: &Slots,
     ctx: &mut EmitCtx<'_>,
@@ -1185,6 +1216,9 @@ fn emit_call<W: Write>(
     writeln!(writer, "    bl {}", call_target(name, ctx.target_os))?;
     if space > 0 {
         abi::adjust_sp(writer, space as i64)?;
+    }
+    if ret.is_some() {
+        widen_call_result(writer, ret_ty)?;
     }
     if let Some(ret) = ret {
         let float = ctx.signatures.float_returns.get(name).copied();
