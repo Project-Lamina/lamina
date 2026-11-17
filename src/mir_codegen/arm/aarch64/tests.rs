@@ -86,6 +86,43 @@ fn narrow_parameters_are_sign_extended_on_entry() -> Result<(), Box<dyn Error>> 
 }
 
 #[test]
+fn narrow_external_results_are_extended_after_the_call() -> Result<(), Box<dyn Error>> {
+    use crate::mir::Block;
+    for (ty, extend) in [
+        (MirType::Scalar(ScalarType::I1), "uxtb x0, w0"),
+        (MirType::Scalar(ScalarType::I8), "sxtb x0, w0"),
+        (MirType::Scalar(ScalarType::I16), "sxth x0, w0"),
+        (MirType::Scalar(ScalarType::I32), "sxtw x0, w0"),
+    ] {
+        let reg = Register::Virtual(VirtualReg::gpr(0));
+        let mut func = Function::new(Signature::new("caller").with_return(ty));
+        let mut block = Block::new("entry");
+        block.push(MirInst::Call {
+            name: "ext".into(),
+            args: vec![],
+            ret: Some(reg.clone()),
+            ret_ty: Some(ty),
+        });
+        block.push(MirInst::Ret {
+            value: Some(Operand::Register(reg)),
+        });
+        func.add_block(block);
+        let asm = String::from_utf8(
+            compile_single_function_aarch64(
+                "caller",
+                &func,
+                TargetOperatingSystem::Linux,
+                &MirCodegenSettings::default(),
+                &AggregateSignatures::empty(PointerWidth::Bits64),
+            )
+            .map_err(|error| error.to_string())?,
+        )?;
+        assert!(asm.contains(&format!("bl ext\n    {extend}\n")), "{asm}");
+    }
+    Ok(())
+}
+
+#[test]
 fn bool_parameters_are_zero_extended_on_entry() -> Result<(), Box<dyn Error>> {
     use crate::mir::{Block, Parameter};
     let ty = MirType::Scalar(ScalarType::I1);

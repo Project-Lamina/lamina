@@ -2321,7 +2321,12 @@ fn emit_block<W: Write>(
                     )?;
                 }
             }
-            MirInst::Call { name, args, ret, .. } => {
+            MirInst::Call {
+                name,
+                args,
+                ret,
+                ret_ty,
+            } => {
                 if name == "lamina.writebyte" && args.len() == 1 {
                     match abi.target_os() {
                         os if os_uses_macho(os) => {
@@ -2469,6 +2474,9 @@ fn emit_block<W: Write>(
                         emit_sp_adjust(w, "add", stack_space as u64)?;
                     }
 
+                    if let Some(ty) = ret_ty {
+                        emit_narrow_param_extension(w, "x0", ty)?;
+                    }
                     if let Some(dst) = ret {
                         emit_call_result(
                             w,
