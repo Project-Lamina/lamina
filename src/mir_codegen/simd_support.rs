@@ -372,12 +372,24 @@ pub fn tools_available(names: &[&str]) -> bool {
     false
 }
 
+/// A disassembler that reads every architecture this crate emits for. GNU objdump is
+/// built for the host's own architecture alone and answers a foreign object with
+/// `can't disassemble for architecture UNKNOWN!`, so the plain spelling counts only
+/// where it is llvm-objdump, as it is in Apple's Xcode tools.
 pub fn objdump_tool() -> Option<&'static str> {
-    // Apple's Xcode tools ship llvm-objdump as plain `objdump` and do not put it on PATH
-    // under the llvm name, so fall back to that spelling.
-    ["llvm-objdump-18", "llvm-objdump", "objdump"]
+    ["llvm-objdump-18", "llvm-objdump"]
         .into_iter()
         .find(|tool| tool_available(tool))
+        .or_else(|| is_llvm_objdump("objdump").then_some("objdump"))
+}
+
+fn is_llvm_objdump(name: &str) -> bool {
+    Command::new(name)
+        .arg("--version")
+        .output()
+        .is_ok_and(|output| {
+            output.status.success() && String::from_utf8_lossy(&output.stdout).contains("LLVM")
+        })
 }
 
 pub fn skip_test(reason: &str) {
