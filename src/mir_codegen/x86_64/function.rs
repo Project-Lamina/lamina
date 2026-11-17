@@ -1144,7 +1144,6 @@ pub(super) fn move_xmm_to_rax(ty: &MirType, xmm: usize) -> String {
 /// ABI names the signedness and leaves the upper bits unspecified.
 #[derive(Default)]
 pub(super) struct AbiExtensions {
-    returns: HashMap<String, NarrowExtension>,
     external_arguments: HashMap<String, Vec<Option<NarrowExtension>>>,
     parameter_types: HashMap<String, Vec<MirType>>,
     parameter_aggregates: HashMap<String, Vec<Option<Aggregate>>>,
@@ -1159,14 +1158,6 @@ pub(super) struct AbiExtensions {
 
 impl AbiExtensions {
     pub(super) fn from_module(module: &MirModule, target_os: TargetOperatingSystem) -> Self {
-        let returns = module
-            .functions
-            .iter()
-            .filter_map(|(name, func)| {
-                let ty = func.sig.ret_ty.as_ref()?;
-                Some((name.clone(), narrow_canonical_extension(ty)?))
-            })
-            .collect();
         let external_arguments = module
             .external_functions
             .iter()
@@ -1231,7 +1222,6 @@ impl AbiExtensions {
                 .collect(),
         };
         Self {
-            returns,
             external_arguments,
             parameter_types,
             parameter_aggregates,
@@ -1249,10 +1239,6 @@ impl AbiExtensions {
 
     pub(super) fn uses_got(&self, symbol: &str) -> bool {
         self.got_symbols.contains(symbol)
-    }
-
-    pub(super) fn return_extension(&self, callee: &str) -> Option<NarrowExtension> {
-        self.returns.get(callee).copied()
     }
 
     pub(super) fn external_argument(&self, callee: &str, index: usize) -> Option<NarrowExtension> {

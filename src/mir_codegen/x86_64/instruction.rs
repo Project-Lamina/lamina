@@ -1336,7 +1336,10 @@ pub(super) fn emit_instruction_x86_64(
             }
         }
         MirInst::Call {
-            name, args, ret, ..
+            name,
+            args,
+            ret,
+            ret_ty,
         } => {
             if name == "lamina.writebyte" && args.len() == 1 {
                 let arg = args.first().ok_or_else(|| {
@@ -1607,7 +1610,8 @@ pub(super) fn emit_instruction_x86_64(
                     } else {
                         if let Some(ty) = abi_extensions.float_return(name) {
                             writeln!(writer, "{}", move_xmm_to_rax(&ty, 0))?;
-                        } else if let Some((width, signed)) = abi_extensions.return_extension(name)
+                        } else if let Some((width, signed)) =
+                            ret_ty.as_ref().and_then(narrow_canonical_extension)
                         {
                             extend_integer(writer, "rax", width, signed)?;
                         }
