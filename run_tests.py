@@ -397,6 +397,8 @@ def run_raw_output(argv, project_root, env=None):
 # The JIT mode is x86_64 Linux only for now, and runs only these testcases.
 JIT_TESTCASES = {
     'aggregate_load_store.lamina', 'arithmetic.lamina',
+    'atomic_cmpxchg.lamina', 'atomic_live_result.lamina', 'atomic_orderings.lamina',
+    'atomics.lamina',
     'binary_op_rhs_in_destination.lamina', 'call_typed_arguments.lamina',
     'calling_convention_bug_test.lamina', 'capable_lamina.lamina',
     'callptr_float_literal.lamina', 'callptr_variadic.lamina',
