@@ -27,6 +27,7 @@ mod memory;
 mod overflow_sink;
 mod peephole;
 mod reduction_exit;
+mod rematerialize;
 pub mod sanity;
 mod scheduling;
 mod sroa;
@@ -55,6 +56,7 @@ pub use memory::MemoryOptimization;
 pub use overflow_sink::SinkOverflowChecks;
 pub use peephole::Peephole;
 pub use reduction_exit::ReductionExit;
+pub use rematerialize::RematerializeSymbols;
 pub use scheduling::InstructionScheduling;
 pub use sroa::ScalarReplacement;
 pub use strength_reduction::StrengthReduction;
@@ -424,6 +426,8 @@ impl TransformPipeline {
             pipeline = pipeline.add_transform(MemoryOptimization);
             pipeline = pipeline.add_transform(DeadCodeElimination);
             pipeline = pipeline.add_transform(SinkOverflowChecks);
+            pipeline = pipeline.add_transform(RematerializeSymbols);
+            pipeline = pipeline.add_transform(DeadCodeElimination);
             pipeline = pipeline.add_transform(TailCallOptimization);
             pipeline = pipeline.add_transform(Peephole);
         }
