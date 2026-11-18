@@ -109,6 +109,11 @@ fn classify(inst: &Instruction, pointer: &Register, count: usize) -> Result<Use,
     }
     match inst {
         Instruction::Lea { base, .. } if base == pointer => Ok(Use::Lea),
+        Instruction::Copy {
+            ty: MirType::Scalar(ScalarType::Ptr),
+            src: Operand::Register(src),
+            ..
+        } if src == pointer => Ok(Use::Lea),
         Instruction::Load {
             ty, addr, attrs, ..
         } => {
@@ -238,6 +243,17 @@ fn split(func: &mut Function) -> bool {
                     && let Some(&(slot, base_offset)) = derived.get(base)
                 {
                     derived.insert(dst.clone(), (slot, base_offset + i64::from(*offset)));
+                    grew = true;
+                }
+                if let Instruction::Copy {
+                    ty: MirType::Scalar(ScalarType::Ptr),
+                    dst,
+                    src: Operand::Register(base),
+                } = &inst.instr
+                    && !derived.contains_key(dst)
+                    && let Some(&(slot, base_offset)) = derived.get(base)
+                {
+                    derived.insert(dst.clone(), (slot, base_offset));
                     grew = true;
                 }
             }
@@ -392,6 +408,7 @@ fn rewrite_block(
                 }
             }
             Instruction::Lea { ref dst, .. } if in_split(dst) => {}
+            Instruction::Copy { ref dst, .. } if in_split(dst) => {}
             Instruction::Load {
                 ty,
                 dst,
@@ -615,13 +632,37 @@ mod tests {
     }
 
     #[test]
-    fn refuses_pointer_copied_to_register() {
-        let mut func = two_field_struct(vec![Instruction::Copy {
-            ty: MirType::Scalar(ScalarType::Ptr),
-            dst: value(6),
-            src: Operand::Register(value(3)),
-        }]);
+    fn follows_pointer_copied_to_register() {
+        let mut func = two_field_struct(vec![
+            Instruction::Copy {
+                ty: MirType::Scalar(ScalarType::Ptr),
+                dst: value(6),
+                src: Operand::Register(value(3)),
+            },
+            load(i32(), value(7), at(value(6), 0)),
+        ]);
+        assert!(apply_pass(&ScalarReplacement, &mut func));
+        assert!(!has_lea(&func));
+        assert_eq!(stack_addr_slots(&func).len(), 2);
+    }
+
+    #[test]
+    fn refuses_copy_of_pointer_passed_to_call() {
+        let mut func = two_field_struct(vec![
+            Instruction::Copy {
+                ty: MirType::Scalar(ScalarType::Ptr),
+                dst: value(6),
+                src: Operand::Register(value(3)),
+            },
+            Instruction::Call {
+                name: "sink".into(),
+                args: vec![Operand::Register(value(6))],
+                ret: None,
+                ret_ty: None,
+            },
+        ]);
         assert!(!apply_pass(&ScalarReplacement, &mut func));
+        assert!(has_lea(&func));
     }
 
     #[test]
