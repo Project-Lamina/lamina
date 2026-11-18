@@ -1,10 +1,10 @@
 //! Function inlining transforms for MIR.
 
 use crate::mir::{
-    AddressMode, Aggregate, AsmOperand, Block, Function, Instruction, Module, Operand, Register,
-    VirtualReg,
+    AddressMode, Aggregate, AsmOperand, Block, Function, Instruction, MirType, Module, Operand,
+    Register, ScalarType, VirtualReg,
     transform::{
-        Transform, TransformCategory, TransformError, TransformLevel,
+        Transform, TransformCategory, TransformError, TransformLevel, aggregate_return,
         loop_rotation::next_virtual_id,
     },
 };
@@ -71,9 +71,17 @@ impl ModuleInlining {
                 for (block_index, block) in caller.blocks.iter().enumerate() {
                     for (index, instruction) in block.instructions.iter().enumerate() {
                         if let Instruction::Call {
-                            name: callee, args, ..
+                            name: callee,
+                            args,
+                            ret,
+                            ..
                         } = &instruction.instr
                             && Self::can_expand(module, callee, args.len())
+                            && Self::result_slot_is_expandable(
+                                caller,
+                                &module.functions[callee],
+                                ret,
+                            )
                         {
                             sites.push((name.clone(), block_index, index, callee.clone()));
                         }
@@ -90,7 +98,10 @@ impl ModuleInlining {
                 );
                 break;
             }
-            let callee = module.functions[&callee_name].clone();
+            let mut callee = module.functions[&callee_name].clone();
+            if callee.sig.ret_aggregate.is_some() {
+                aggregate_return::unify_returns(&mut callee);
+            }
             expanded.insert(callee_name.clone());
             let caller = module
                 .functions
@@ -121,7 +132,7 @@ impl ModuleInlining {
                 .any(|i| matches!(&i.instr, Instruction::InlineAsm { .. }))
             && Self::expansion_size(function) <= Self::callee_size_limit(function)
             && function.sig.params.len() == arg_count
-            && function.sig.ret_aggregate.is_none()
+            && !function.sig.sret_claimed
             && function
                 .sig
                 .params
@@ -150,6 +161,7 @@ impl ModuleInlining {
                     block.instructions.last().map(|i| &i.instr)
                     && callee != name
                     && Self::can_expand(module, callee, args.len())
+                    && module.functions[callee].sig.ret_aggregate.is_none()
                     && module.functions[callee].sig.ret_ty == caller.sig.ret_ty
                 {
                     sites.push((name.clone(), block_index));
@@ -284,6 +296,51 @@ impl ModuleInlining {
         })
     }
 
+    /// Whether the caller can take the callee's aggregate result from its inlined return
+    /// value: the call's result slot is then named by its address alone.
+    fn result_slot_is_expandable(
+        caller: &Function,
+        callee: &Function,
+        ret: &Option<Register>,
+    ) -> bool {
+        if callee.sig.ret_aggregate.is_none() {
+            return true;
+        }
+        let mut unified = callee.clone();
+        aggregate_return::unify_returns(&mut unified);
+        let returns = unified
+            .blocks
+            .iter()
+            .flat_map(|block| &block.instructions)
+            .filter(|inst| matches!(inst.instr, Instruction::Ret { .. }))
+            .count();
+        if returns != 1 {
+            return false;
+        }
+        match ret {
+            None => true,
+            Some(Register::Virtual(slot)) => {
+                let mut addresses = 0;
+                let mut mentions = 0;
+                for inst in caller.blocks.iter().flat_map(|block| &block.instructions) {
+                    if matches!(&inst.instr, Instruction::StackAddr { slot: s, .. } if s == slot) {
+                        addresses += 1;
+                    }
+                    let as_reg = Register::Virtual(*slot);
+                    mentions += usize::from(inst.instr.def_reg() == Some(&as_reg));
+                    mentions += inst
+                        .instr
+                        .use_regs()
+                        .into_iter()
+                        .filter(|r| **r == as_reg)
+                        .count();
+                }
+                addresses == 1 && mentions == 1
+            }
+            Some(Register::Physical(_)) => false,
+        }
+    }
+
     fn expand(
         &self,
         caller: &mut Function,
@@ -291,6 +348,44 @@ impl ModuleInlining {
         index: usize,
         callee: &Function,
     ) -> Result<(), TransformError> {
+        let result_slot = match &caller.blocks[block_index].instructions[index].instr {
+            Instruction::Call {
+                ret: Some(Register::Virtual(slot)),
+                ..
+            } if callee.sig.ret_aggregate.is_some() => Some(*slot),
+            _ => None,
+        };
+        if let Some(join) = self.expand_body(caller, block_index, index, callee)? {
+            if let Some(slot) = result_slot {
+                caller.stack_reservations.remove(&slot);
+                caller.stack_alignments.remove(&slot);
+                for block in &mut caller.blocks {
+                    for inst in &mut block.instructions {
+                        if let Instruction::StackAddr { dst, slot: s } = &inst.instr
+                            && *s == slot
+                        {
+                            inst.instr = Instruction::Copy {
+                                ty: MirType::Scalar(ScalarType::Ptr),
+                                dst: dst.clone(),
+                                src: Operand::Register(join.clone()),
+                            };
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Inlines the callee and returns the register its aggregate result is copied into,
+    /// when it returns one.
+    fn expand_body(
+        &self,
+        caller: &mut Function,
+        block_index: usize,
+        index: usize,
+        callee: &Function,
+    ) -> Result<Option<Register>, TransformError> {
         let Instruction::Call { args, ret, .. } =
             &caller.blocks[block_index].instructions[index].clone().instr
         else {
@@ -327,6 +422,16 @@ impl ModuleInlining {
             }
         }
         let mut next_id = max_id + 1;
+        let join = callee.sig.ret_aggregate.is_some().then(|| {
+            let reg = Register::Virtual(VirtualReg::gpr(next_id));
+            next_id += 1;
+            reg
+        });
+        let result_target = if join.is_some() {
+            join.clone()
+        } else {
+            ret.clone()
+        };
         let mut registers = HashMap::new();
         let mut rename = |reg: &Register| -> Register {
             match reg {
@@ -435,7 +540,9 @@ impl ModuleInlining {
                         *default = labels[default].clone();
                     }
                     Instruction::Ret { value } => {
-                        if let (Some(dst), Some(src), Some(ty)) = (&ret, value, callee.sig.ret_ty) {
+                        if let (Some(dst), Some(src), Some(ty)) =
+                            (&result_target, value, callee.sig.ret_ty)
+                        {
                             let mut copy = Instruction::Copy {
                                 dst: dst.clone(),
                                 src: src.clone(),
@@ -466,7 +573,7 @@ impl ModuleInlining {
             blocks[0].instructions.pop();
             copies.append(&mut blocks[0].instructions);
             block.instructions.splice(index..=index, copies);
-            return Ok(());
+            return Ok(join);
         }
         let after = block.instructions.split_off(index + 1);
         block.instructions.pop();
@@ -485,7 +592,7 @@ impl ModuleInlining {
         caller
             .blocks
             .splice(block_index + 1..block_index + 1, blocks);
-        Ok(())
+        Ok(join)
     }
 
     pub(crate) fn map_registers(

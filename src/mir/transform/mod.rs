@@ -5,6 +5,7 @@
 //! or entire modules.
 
 mod addressing;
+mod aggregate_return;
 mod alias;
 #[cfg(test)]
 mod alias_tests;
