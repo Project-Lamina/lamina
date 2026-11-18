@@ -24,6 +24,7 @@ mod loop_opt;
 mod loop_rotation;
 mod mem2reg;
 mod memory;
+mod overflow_sink;
 mod peephole;
 mod reduction_exit;
 pub mod sanity;
@@ -51,6 +52,7 @@ pub use loop_opt::LoopInvariantCodeMotion;
 pub use loop_rotation::LoopRotation;
 pub use mem2reg::Mem2Reg;
 pub use memory::MemoryOptimization;
+pub use overflow_sink::SinkOverflowChecks;
 pub use peephole::Peephole;
 pub use reduction_exit::ReductionExit;
 pub use scheduling::InstructionScheduling;
@@ -421,6 +423,7 @@ impl TransformPipeline {
             pipeline = pipeline.add_transform(CopyPropagation);
             pipeline = pipeline.add_transform(MemoryOptimization);
             pipeline = pipeline.add_transform(DeadCodeElimination);
+            pipeline = pipeline.add_transform(SinkOverflowChecks);
             pipeline = pipeline.add_transform(TailCallOptimization);
             pipeline = pipeline.add_transform(Peephole);
         }
