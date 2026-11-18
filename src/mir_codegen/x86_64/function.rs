@@ -12,6 +12,59 @@ use crate::mir_codegen::macho_unwind;
 use lamina_mir::EightbyteClass;
 use lamina_platform::TargetArchitecture;
 
+/// Checked operations whose flag only the following branch reads.
+fn branch_overflows(
+    func: &Function,
+    counts: &HashMap<VirtualReg, usize>,
+) -> HashSet<(usize, usize)> {
+    func.blocks
+        .iter()
+        .enumerate()
+        .flat_map(|(b, block)| {
+            block
+                .instructions
+                .windows(2)
+                .enumerate()
+                .filter_map(move |(i, pair)| match (&pair[0].instr, &pair[1].instr) {
+                    (
+                        MirInst::IntOverflow {
+                            dst: Register::Virtual(dst),
+                            ..
+                        },
+                        MirInst::Br {
+                            cond: Register::Virtual(cond),
+                            ..
+                        },
+                    ) if dst == cond && counts.get(dst) == Some(&1) => Some((b, i)),
+                    _ => None,
+                })
+        })
+        .collect()
+}
+
+/// Branch on the flags just set: `flag` goes to `true_target`, `inverted` to `false_target`.
+fn emit_flag_branch<W: Write>(
+    output: &mut RaxTrackingWriter<W>,
+    (lp, func_name): (&str, &str),
+    (flag, inverted): (&str, &str),
+    (true_target, false_target): (&str, &str),
+    next_label: &str,
+    inverted_first: bool,
+) -> std::io::Result<()> {
+    if inverted_first {
+        writeln!(output, "    j{inverted} {lp}_{func_name}.{false_target}")?;
+        if true_target != next_label {
+            writeln!(output, "    jmp {lp}_{func_name}.{true_target}")?;
+        }
+    } else {
+        writeln!(output, "    j{flag} {lp}_{func_name}.{true_target}")?;
+        if false_target != next_label {
+            writeln!(output, "    jmp {lp}_{func_name}.{false_target}")?;
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn callee_saved(reg: &str, target_os: TargetOperatingSystem) -> bool {
     matches!(reg, "rbx" | "r12" | "r13" | "r14" | "r15")
         || (target_os == TargetOperatingSystem::Windows && matches!(reg, "rsi" | "rdi"))
@@ -520,6 +573,7 @@ pub(super) fn compile_single_function_x86_64(
     // materialised 0/1: the flags from cmpq drive jCC directly.
     let use_counts = use_counts(func);
     let flag_producers = &plan.comparisons;
+    let overflow_branches = branch_overflows(func, &use_counts);
 
     let loop_headers = &plan.aligned_headers;
 
@@ -585,29 +639,70 @@ pub(super) fn compile_single_function_x86_64(
                 )
                 .map_err(lamina_to_codegen_error)?;
                 let suffix = cmp_suffix(op).map_err(lamina_to_codegen_error)?;
-                if true_target == next_label
+                let inverted = inverted_cmp_suffix(op).map_err(lamina_to_codegen_error)?;
+                let inverted_first = true_target == next_label
                     || rotations
                         .get(&block_index)
-                        .is_some_and(|&body| func.blocks[body].label == *false_target)
-                {
-                    let inverted = inverted_cmp_suffix(op).map_err(lamina_to_codegen_error)?;
-                    writeln!(output, "    j{inverted} {lp}_{func_name}.{false_target}")
-                        .map_err(io_codegen_error)?;
-                    if true_target != next_label {
-                        writeln!(output, "    jmp {lp}_{func_name}.{true_target}")
-                            .map_err(|e| CodegenError::InvalidCodegenOptions(e.to_string()))?;
-                    }
-                } else {
-                    writeln!(output, "    j{suffix} {lp}_{func_name}.{true_target}")
-                        .map_err(io_codegen_error)?;
-                    if false_target != next_label {
-                        writeln!(output, "    jmp {lp}_{func_name}.{false_target}")
-                            .map_err(io_codegen_error)?;
-                    }
-                }
+                        .is_some_and(|&body| func.blocks[body].label == *false_target);
+                emit_flag_branch(
+                    &mut output,
+                    (lp, func_name),
+                    (suffix, inverted),
+                    (true_target, false_target),
+                    next_label,
+                    inverted_first,
+                )
+                .map_err(io_codegen_error)?;
                 if !scratch.is_empty() && scratch != "rbx" {
                     reg_alloc.free_scratch(scratch);
                 }
+                output.rax_value = None;
+                skip = 1;
+                continue;
+            }
+            if let MirInst::IntOverflow {
+                op,
+                ty,
+                signed,
+                lhs,
+                rhs,
+                ..
+            } = &inst.instr
+                && overflow_branches.contains(&(block_index, position))
+                && let Some(MirInst::Br {
+                    true_target,
+                    false_target,
+                    ..
+                }) = block.instructions.get(position + 1).map(|i| &i.instr)
+            {
+                emit_source_loc(&mut output, settings, inst.loc)
+                    .map_err(lamina_to_codegen_error)?;
+                let (flag, inverted, scratch) = emit_overflow_flags(
+                    op,
+                    ty,
+                    *signed,
+                    lhs,
+                    rhs,
+                    &mut output,
+                    &mut reg_alloc,
+                    &stack_slots,
+                    func.pointer_width,
+                )
+                .map_err(lamina_to_codegen_error)?;
+                let inverted_first = true_target == next_label
+                    || rotations
+                        .get(&block_index)
+                        .is_some_and(|&body| func.blocks[body].label == *false_target);
+                emit_flag_branch(
+                    &mut output,
+                    (lp, func_name),
+                    (flag, inverted),
+                    (true_target, false_target),
+                    next_label,
+                    inverted_first,
+                )
+                .map_err(io_codegen_error)?;
+                reg_alloc.free_scratch(scratch);
                 output.rax_value = None;
                 skip = 1;
                 continue;

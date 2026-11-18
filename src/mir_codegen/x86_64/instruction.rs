@@ -2103,64 +2103,18 @@ pub(super) fn emit_instruction_x86_64(
             lhs,
             rhs,
         } => {
-            let size = ty.size_bytes(pointer_width);
-            let scratch = reg_alloc.alloc_scratch().ok_or_else(scratch_error)?;
-            load_operand_to_rax(lhs, writer, reg_alloc, stack_slots)?;
-            load_operand_to_register(rhs, writer, reg_alloc, stack_slots, scratch)?;
-            if size < 8 {
-                // Below 64 bits the exact result fits in a register, so the question is
-                // whether re-reading it at the operand width gives the same number.
-                extend_integer(writer, "rax", size, *signed)?;
-                extend_integer(writer, scratch, size, *signed)?;
-                match op {
-                    IntOverflowOp::Add => writeln!(writer, "    addq %{scratch}, %rax")?,
-                    IntOverflowOp::Sub => writeln!(writer, "    subq %{scratch}, %rax")?,
-                    IntOverflowOp::Mul => writeln!(writer, "    imulq %{scratch}, %rax")?,
-                }
-                writeln!(writer, "    movq %rax, %{scratch}")?;
-                extend_integer(writer, scratch, size, *signed)?;
-                writeln!(writer, "    cmpq %{scratch}, %rax")?;
-                writeln!(writer, "    setne %al")?;
-            } else {
-                match (op, signed) {
-                    (IntOverflowOp::Add, true) => {
-                        writeln!(writer, "    addq %{scratch}, %rax")?;
-                        writeln!(writer, "    seto %al")?;
-                    }
-                    (IntOverflowOp::Add, false) => {
-                        writeln!(writer, "    addq %{scratch}, %rax")?;
-                        writeln!(writer, "    setc %al")?;
-                    }
-                    (IntOverflowOp::Sub, true) => {
-                        writeln!(writer, "    subq %{scratch}, %rax")?;
-                        writeln!(writer, "    seto %al")?;
-                    }
-                    (IntOverflowOp::Sub, false) => {
-                        writeln!(writer, "    subq %{scratch}, %rax")?;
-                        writeln!(writer, "    setc %al")?;
-                    }
-                    (IntOverflowOp::Mul, true) => {
-                        writeln!(writer, "    imulq %{scratch}, %rax")?;
-                        writeln!(writer, "    seto %al")?;
-                    }
-                    (IntOverflowOp::Mul, false) => {
-                        // The unsigned product needs the high word, which only the
-                        // one-operand form produces, and that form writes %rdx.
-                        writeln!(writer, "    pushq %rdx")?;
-                        writeln!(writer, "    mulq %{scratch}")?;
-                        writeln!(writer, "    setc %al")?;
-                        writeln!(writer, "    movzbq %al, %rax")?;
-                        writeln!(writer, "    popq %rdx")?;
-                        if let Some(dp) = mapped_register(dst, reg_alloc) {
-                            writeln!(writer, "    movq %rax, %{dp}")?;
-                        } else if let Register::Virtual(vreg) = dst {
-                            store_rax_to_register(vreg, writer, reg_alloc, stack_slots)?;
-                        }
-                        reg_alloc.free_scratch(scratch);
-                        return Ok(());
-                    }
-                }
-            }
+            let (flag, _, scratch) = emit_overflow_flags(
+                op,
+                ty,
+                *signed,
+                lhs,
+                rhs,
+                writer,
+                reg_alloc,
+                stack_slots,
+                pointer_width,
+            )?;
+            writeln!(writer, "    set{flag} %al")?;
             writeln!(writer, "    movzbq %al, %rax")?;
             if let Some(dp) = mapped_register(dst, reg_alloc) {
                 writeln!(writer, "    movq %rax, %{dp}")?;
@@ -2699,6 +2653,55 @@ pub(super) fn cmp_suffix(op: &IntCmpOp) -> Result<&'static str, LaminaError> {
             )));
         }
     })
+}
+
+/// Emit a checked operation, leaving its overflow flags set. Returns the overflow
+/// condition, its inverse, and the scratch register to release.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn emit_overflow_flags(
+    op: &IntOverflowOp,
+    ty: &MirType,
+    signed: bool,
+    lhs: &Operand,
+    rhs: &Operand,
+    writer: &mut RaxTrackingWriter<impl Write>,
+    reg_alloc: &mut X64RegAlloc,
+    stack_slots: &HashMap<VirtualReg, i32>,
+    pointer_width: PointerWidth,
+) -> Result<(&'static str, &'static str, &'static str), LaminaError> {
+    let size = ty.size_bytes(pointer_width);
+    let scratch = reg_alloc.alloc_scratch().ok_or_else(scratch_error)?;
+    load_operand_to_rax(lhs, writer, reg_alloc, stack_slots)?;
+    load_operand_to_register(rhs, writer, reg_alloc, stack_slots, scratch)?;
+    if size < 8 {
+        // Below 64 bits the exact result fits in a register, so the question is
+        // whether re-reading it at the operand width gives the same number.
+        extend_integer(writer, "rax", size, signed)?;
+        extend_integer(writer, scratch, size, signed)?;
+        match op {
+            IntOverflowOp::Add => writeln!(writer, "    addq %{scratch}, %rax")?,
+            IntOverflowOp::Sub => writeln!(writer, "    subq %{scratch}, %rax")?,
+            IntOverflowOp::Mul => writeln!(writer, "    imulq %{scratch}, %rax")?,
+        }
+        writeln!(writer, "    movq %rax, %{scratch}")?;
+        extend_integer(writer, scratch, size, signed)?;
+        writeln!(writer, "    cmpq %{scratch}, %rax")?;
+        return Ok(("ne", "e", scratch));
+    }
+    let (flag, inverted) = if signed { ("o", "no") } else { ("c", "nc") };
+    match (op, signed) {
+        (IntOverflowOp::Add, _) => writeln!(writer, "    addq %{scratch}, %rax")?,
+        (IntOverflowOp::Sub, _) => writeln!(writer, "    subq %{scratch}, %rax")?,
+        (IntOverflowOp::Mul, true) => writeln!(writer, "    imulq %{scratch}, %rax")?,
+        (IntOverflowOp::Mul, false) => {
+            // The unsigned product needs the high word, which only the one-operand form
+            // produces, and that form writes %rdx.
+            writeln!(writer, "    pushq %rdx")?;
+            writeln!(writer, "    mulq %{scratch}")?;
+            writeln!(writer, "    popq %rdx")?;
+        }
+    }
+    Ok((flag, inverted, scratch))
 }
 
 /// Emit the `cmpq` for an integer comparison, leaving the flags set. Returns the scratch

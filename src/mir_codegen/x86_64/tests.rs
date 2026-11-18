@@ -1915,6 +1915,18 @@ fn overflow_flags_read_the_condition_the_signedness_names() {
 }
 
 #[test]
+fn a_checked_branch_jumps_on_the_flag_it_sets() {
+    let source = "fn @main(i64 %a, i64 %b) -> i64 {\nentry:\n    %f = add.ovf.u64 %a, %b\n    br %f, fail, ok\nok:\n    ret.i64 0\nfail:\n    ret.i64 1\n}\n";
+    let ir = parse_module(source).unwrap();
+    let mir = from_ir_x86_64(&ir, "ovf").unwrap();
+    let mut output = Vec::new();
+    generate_mir_x86_64(&mir, &mut output, TargetOperatingSystem::Linux).unwrap();
+    let asm = String::from_utf8(output).unwrap();
+    assert!(asm.contains("    jc .L"), "{asm}");
+    assert!(!asm.contains("setc"), "{asm}");
+}
+
+#[test]
 fn a_stated_alignment_does_not_change_x86_64_code() {
     let assemble = |line: &str| {
         let source = format!("fn @main(ptr %p) -> i64 {{\nentry:\n    {line}\n    ret.i64 0\n}}\n");
