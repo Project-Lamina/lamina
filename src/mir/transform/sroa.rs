@@ -12,7 +12,7 @@ use crate::mir::{
     ScalarType, VirtualReg,
     transform::{Transform, TransformCategory, TransformError, TransformLevel},
 };
-use lamina_mir::Located;
+use lamina_mir::{Immediate, IntBinOp, Located, MemoryAttrs};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::mem;
 
@@ -52,7 +52,6 @@ enum Refusal {
     Atomic,
     NonScalar,
     AddressSpace,
-    MixedType,
     Overlap,
     OutOfBounds,
     MultipleDefs,
@@ -181,18 +180,18 @@ fn fields_of(
     let words = func.stack_reservations.get(&slot).copied().unwrap_or(0);
     let reserved = 8 * (1 + i64::try_from(words).unwrap_or(i64::MAX / 8));
 
-    let mut fields: BTreeMap<i64, MirType> = BTreeMap::new();
+    let mut seen: BTreeMap<i64, (MirType, i64)> = BTreeMap::new();
     for &(offset, ty) in &info.accesses {
         let size = scalar_size(ty).ok_or(Refusal::NonScalar)?;
         if offset < 0 || offset + size > reserved {
             return Err(Refusal::OutOfBounds);
         }
-        if let Some(existing) = fields.insert(offset, ty)
-            && existing != ty
-        {
-            return Err(Refusal::MixedType);
+        let entry = seen.entry(offset).or_insert((ty, size));
+        if entry.0 != ty {
+            *entry = (int_of(size.max(entry.1)), size.max(entry.1));
         }
     }
+    let fields: BTreeMap<i64, MirType> = seen.into_iter().map(|(o, (ty, _))| (o, ty)).collect();
     let mut end = i64::MIN;
     for (&offset, &ty) in &fields {
         if offset < end {
@@ -337,18 +336,20 @@ fn split(func: &mut Function) -> bool {
         .map_or(0, |max| max + 1);
 
     let mut piece_of: HashMap<(VirtualReg, i64), (VirtualReg, Register)> = HashMap::new();
+    let mut piece_types: HashMap<(VirtualReg, i64), MirType> = HashMap::new();
     let mut pieces_by_slot: HashMap<VirtualReg, Vec<(VirtualReg, Register)>> = HashMap::new();
     for slot in &candidates {
         let Some(fields) = layouts.get(slot) else {
             continue;
         };
-        for (offset, _) in fields {
+        for (offset, ty) in fields {
             let piece = (
                 VirtualReg::gpr(next_id),
                 Register::Virtual(VirtualReg::gpr(next_id + 1)),
             );
             next_id += 2;
             piece_of.insert((*slot, *offset), piece.clone());
+            piece_types.insert((*slot, *offset), *ty);
             pieces_by_slot.entry(*slot).or_default().push(piece);
         }
     }
@@ -359,19 +360,21 @@ fn split(func: &mut Function) -> bool {
         func.stack_alignments.remove(slot);
     }
 
-    let retarget = |addr: AddressMode| -> AddressMode {
+    let retarget = |addr: AddressMode| -> (AddressMode, Option<MirType>) {
         if let AddressMode::BaseOffset { base, offset, .. } = &addr
             && let Some(&(slot, base_offset)) = derived.get(base)
             && split_slots.contains(&slot)
-            && let Some((_, pointer)) = piece_of.get(&(slot, base_offset + i64::from(*offset)))
+            && let key = (slot, base_offset + i64::from(*offset))
+            && let Some((_, pointer)) = piece_of.get(&key)
         {
-            return AddressMode::BaseOffset {
+            let piece = AddressMode::BaseOffset {
                 address_space: AddressSpace::default(),
                 base: pointer.clone(),
                 offset: 0,
             };
+            return (piece, piece_types.get(&key).copied());
         }
-        addr
+        (addr, None)
     };
     let in_split = |reg: &Register| {
         derived
@@ -380,9 +383,215 @@ fn split(func: &mut Function) -> bool {
     };
 
     for block in &mut func.blocks {
-        rewrite_block(block, &split_slots, &pieces_by_slot, &in_split, &retarget);
+        rewrite_block(
+            block,
+            &split_slots,
+            &pieces_by_slot,
+            &in_split,
+            &retarget,
+            &mut next_id,
+        );
     }
     true
+}
+
+fn int_of(size: i64) -> MirType {
+    MirType::Scalar(match size {
+        1 => ScalarType::I8,
+        2 => ScalarType::I16,
+        4 => ScalarType::I32,
+        _ => ScalarType::I64,
+    })
+}
+
+fn fresh_gpr(next_id: &mut u32) -> Register {
+    let reg = Register::Virtual(VirtualReg::gpr(*next_id));
+    *next_id += 1;
+    reg
+}
+
+/// Bits of a constant, as an unsigned value of its own width.
+fn immediate_bits(imm: &Immediate) -> u64 {
+    match imm {
+        Immediate::I8(v) => u64::from(*v as u8),
+        Immediate::I16(v) => u64::from(*v as u16),
+        Immediate::I32(v) => u64::from(*v as u32),
+        Immediate::I64(v) => *v as u64,
+        Immediate::F32(v) => u64::from(v.to_bits()),
+        Immediate::F64(v) => v.to_bits(),
+    }
+}
+
+fn int_immediate(bits: u64, size: i64) -> Immediate {
+    match size {
+        1 => Immediate::I8(bits as u8 as i8),
+        2 => Immediate::I16(bits as u16 as i16),
+        4 => Immediate::I32(bits as u32 as i32),
+        _ => Immediate::I64(bits as i64),
+    }
+}
+
+/// Reads an access of type `ty` out of a piece holding `piece`. The access starts at the
+/// piece's first byte, so narrowing keeps the low bytes.
+#[allow(clippy::too_many_arguments)]
+fn load_piece(
+    ty: MirType,
+    piece: MirType,
+    addr: AddressMode,
+    attrs: MemoryAttrs,
+    dst: Register,
+    next_id: &mut u32,
+    out: &mut Vec<Instruction>,
+) {
+    if ty == piece {
+        out.push(Instruction::Load {
+            ty,
+            dst,
+            addr,
+            attrs,
+        });
+        return;
+    }
+    let raw = fresh_gpr(next_id);
+    out.push(Instruction::Load {
+        ty: piece,
+        dst: raw.clone(),
+        addr,
+        attrs,
+    });
+    let size = scalar_size(ty).unwrap_or(8);
+    let mut value = Operand::Register(raw);
+    let mut value_ty = piece;
+    if scalar_size(piece) != Some(size) {
+        let narrow = fresh_gpr(next_id);
+        out.push(Instruction::IntConvert {
+            from: piece,
+            to: int_of(size),
+            signed: false,
+            dst: narrow.clone(),
+            src: value,
+        });
+        value = Operand::Register(narrow);
+        value_ty = int_of(size);
+    }
+    if value_ty == ty {
+        out.push(Instruction::Copy {
+            ty,
+            dst,
+            src: value,
+        });
+    } else {
+        out.push(Instruction::Bitcast {
+            from: value_ty,
+            to: ty,
+            dst,
+            src: value,
+        });
+    }
+}
+
+/// Writes an access of type `ty` into a piece holding `piece`. A narrower access replaces
+/// only its own low bytes, so the rest of the piece is read back and kept.
+#[allow(clippy::too_many_arguments)]
+fn store_piece(
+    ty: MirType,
+    piece: MirType,
+    addr: AddressMode,
+    attrs: MemoryAttrs,
+    src: Operand,
+    next_id: &mut u32,
+    out: &mut Vec<Instruction>,
+) {
+    if ty == piece {
+        out.push(Instruction::Store {
+            ty,
+            src,
+            addr,
+            attrs,
+        });
+        return;
+    }
+    let size = scalar_size(ty).unwrap_or(8);
+    let width = scalar_size(piece).unwrap_or(8);
+    let bits = match (&src, ty) {
+        (Operand::Immediate(imm), _) => {
+            Operand::Immediate(int_immediate(immediate_bits(imm), size))
+        }
+        (
+            _,
+            MirType::Scalar(ScalarType::I8 | ScalarType::I16 | ScalarType::I32 | ScalarType::I64),
+        ) => src,
+        _ => {
+            let tmp = fresh_gpr(next_id);
+            out.push(Instruction::Bitcast {
+                from: ty,
+                to: int_of(size),
+                dst: tmp.clone(),
+                src,
+            });
+            Operand::Register(tmp)
+        }
+    };
+    if size == width {
+        out.push(Instruction::Store {
+            ty: piece,
+            src: bits,
+            addr,
+            attrs,
+        });
+        return;
+    }
+    let low_mask = (1u64 << (8 * size)) - 1;
+    let full_mask = if width == 8 {
+        u64::MAX
+    } else {
+        (1u64 << (8 * width)) - 1
+    };
+    let old = fresh_gpr(next_id);
+    out.push(Instruction::Load {
+        ty: piece,
+        dst: old.clone(),
+        addr: addr.clone(),
+        attrs,
+    });
+    let kept = fresh_gpr(next_id);
+    out.push(Instruction::IntBinary {
+        op: IntBinOp::And,
+        ty: piece,
+        dst: kept.clone(),
+        lhs: Operand::Register(old),
+        rhs: Operand::Immediate(int_immediate(full_mask & !low_mask, width)),
+    });
+    let value = match bits {
+        Operand::Immediate(imm) => {
+            Operand::Immediate(int_immediate(immediate_bits(&imm) & low_mask, width))
+        }
+        other => {
+            let widened = fresh_gpr(next_id);
+            out.push(Instruction::IntConvert {
+                from: int_of(size),
+                to: piece,
+                signed: false,
+                dst: widened.clone(),
+                src: other,
+            });
+            Operand::Register(widened)
+        }
+    };
+    let merged = fresh_gpr(next_id);
+    out.push(Instruction::IntBinary {
+        op: IntBinOp::Or,
+        ty: piece,
+        dst: merged.clone(),
+        lhs: Operand::Register(kept),
+        rhs: value,
+    });
+    out.push(Instruction::Store {
+        ty: piece,
+        src: Operand::Register(merged),
+        addr,
+        attrs,
+    });
 }
 
 fn rewrite_block(
@@ -390,7 +599,8 @@ fn rewrite_block(
     split_slots: &HashSet<VirtualReg>,
     pieces_by_slot: &HashMap<VirtualReg, Vec<(VirtualReg, Register)>>,
     in_split: &impl Fn(&Register) -> bool,
-    retarget: &impl Fn(AddressMode) -> AddressMode,
+    retarget: &impl Fn(AddressMode) -> (AddressMode, Option<MirType>),
+    next_id: &mut u32,
 ) {
     let instructions = mem::take(&mut block.instructions);
     let mut rewritten_blocks: Vec<Located> = Vec::with_capacity(instructions.len());
@@ -414,23 +624,31 @@ fn rewrite_block(
                 dst,
                 addr,
                 attrs,
-            } => rewritten.push(Instruction::Load {
-                ty,
-                dst,
-                addr: retarget(addr),
-                attrs,
-            }),
+            } => match retarget(addr) {
+                (addr, Some(piece)) => load_piece(ty, piece, addr, attrs, dst, next_id, rewritten),
+                (addr, None) => rewritten.push(Instruction::Load {
+                    ty,
+                    dst,
+                    addr,
+                    attrs,
+                }),
+            },
             Instruction::Store {
                 ty,
                 src,
                 addr,
                 attrs,
-            } => rewritten.push(Instruction::Store {
-                ty,
-                src,
-                addr: retarget(addr),
-                attrs,
-            }),
+            } => match retarget(addr) {
+                (addr, Some(piece)) => {
+                    store_piece(ty, piece, addr, attrs, src, next_id, rewritten);
+                }
+                (addr, None) => rewritten.push(Instruction::Store {
+                    ty,
+                    src,
+                    addr,
+                    attrs,
+                }),
+            },
             other => rewritten.push(other),
         }
         rewritten_blocks.extend(pieces.into_iter().map(|i| Located::at(i, loc)));
@@ -737,7 +955,7 @@ mod tests {
     }
 
     #[test]
-    fn refuses_mixed_type_at_one_offset() {
+    fn mixed_type_at_one_offset_becomes_one_integer_piece() {
         let mut func = FunctionBuilder::new("f")
             .returns(i64())
             .block("entry")
@@ -751,7 +969,43 @@ mod tests {
             ))
             .instr(ret(value(4)))
             .build();
-        assert!(!apply_pass(&ScalarReplacement, &mut func));
+        assert!(apply_pass(&ScalarReplacement, &mut func));
+        assert!(!has_lea(&func));
+        assert!(apply_pass(&Mem2Reg, &mut func));
+        assert_eq!(stack_addr_slots(&func).len(), 0);
+        assert!(
+            count(&func, |i| matches!(i, Instruction::Bitcast { .. })) >= 1,
+            "pointer read from an integer piece needs a bitcast"
+        );
+    }
+
+    #[test]
+    fn narrow_store_into_wide_piece_keeps_the_other_bytes() {
+        let mut func = FunctionBuilder::new("f")
+            .returns(i64())
+            .block("entry")
+            .instr(stack_addr())
+            .instr(lea(value(3), ptr(), 0))
+            .instr(store(i64(), imm(-1), at(value(3), 0)))
+            .instr(store(
+                MirType::Scalar(ScalarType::I32),
+                Operand::Immediate(Immediate::I32(0)),
+                at(value(3), 0),
+            ))
+            .instr(load(i64(), value(4), at(ptr(), 0)))
+            .instr(ret(value(4)))
+            .build();
+        assert!(apply_pass(&ScalarReplacement, &mut func));
+        assert!(
+            count(&func, |i| matches!(
+                i,
+                Instruction::IntBinary {
+                    op: IntBinOp::And,
+                    ..
+                }
+            )) >= 1,
+            "a narrow store reads back and keeps the high bytes"
+        );
     }
 
     #[test]
