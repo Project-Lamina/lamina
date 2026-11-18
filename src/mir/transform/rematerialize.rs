@@ -61,7 +61,13 @@ fn rematerialize(func: &mut Function) -> bool {
         let read: Vec<Register> = func.blocks[block_index]
             .instructions
             .iter()
-            .flat_map(|inst| inst.instr.use_regs().into_iter().cloned().collect::<Vec<_>>())
+            .flat_map(|inst| {
+                inst.instr
+                    .use_regs()
+                    .into_iter()
+                    .cloned()
+                    .collect::<Vec<_>>()
+            })
             .collect();
         for reg in read {
             let Some((def_block, symbol)) = defined_in.get(&reg) else {
@@ -113,10 +119,13 @@ mod tests {
             .iter()
             .enumerate()
             .flat_map(|(b, block)| {
-                block.instructions.iter().filter_map(move |inst| match &inst.instr {
-                    Instruction::SymbolAddress { symbol, .. } => Some((b, symbol.clone())),
-                    _ => None,
-                })
+                block
+                    .instructions
+                    .iter()
+                    .filter_map(move |inst| match &inst.instr {
+                        Instruction::SymbolAddress { symbol, .. } => Some((b, symbol.clone())),
+                        _ => None,
+                    })
             })
             .collect()
     }
