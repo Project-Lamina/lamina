@@ -296,14 +296,27 @@ fn add_piece(pieces: &mut Pieces, offset: i64, ty: MirType, attrs: MemoryAttrs) 
     if !(0..=i64::from(i16::MAX)).contains(&offset) {
         return None;
     }
-    match pieces.get(&offset) {
-        Some((existing, _)) if *existing != ty => None,
+    match pieces.get(&offset).copied() {
+        Some((existing, attrs)) if existing != ty => {
+            let width = scalar_size(existing).max(scalar_size(ty));
+            pieces.insert(offset, (int_of(width), attrs));
+            Some(())
+        }
         Some(_) => Some(()),
         None => {
             pieces.insert(offset, (ty, attrs));
             Some(())
         }
     }
+}
+
+fn int_of(size: i64) -> MirType {
+    MirType::Scalar(match size {
+        1 => ScalarType::I8,
+        2 => ScalarType::I16,
+        4 => ScalarType::I32,
+        _ => ScalarType::I64,
+    })
 }
 
 fn scalar_size(ty: MirType) -> i64 {
