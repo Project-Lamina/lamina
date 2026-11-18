@@ -119,7 +119,7 @@ impl ModuleInlining {
                 .iter()
                 .flat_map(|b| &b.instructions)
                 .any(|i| matches!(&i.instr, Instruction::InlineAsm { .. }))
-            && function.instruction_count() <= Self::callee_size_limit(function)
+            && Self::expansion_size(function) <= Self::callee_size_limit(function)
             && function.sig.params.len() == arg_count
             && function.sig.ret_aggregate.is_none()
             && function
@@ -238,6 +238,16 @@ impl ModuleInlining {
                 module.functions.remove(name);
             }
         }
+    }
+
+    /// Instructions outside panic paths (blocks ending in `unreachable`).
+    fn expansion_size(function: &Function) -> usize {
+        function
+            .blocks
+            .iter()
+            .filter(|block| !matches!(block.terminator(), Some(Instruction::Unreachable)))
+            .map(Block::len)
+            .sum()
     }
 
     fn callee_size_limit(function: &Function) -> usize {
@@ -1108,6 +1118,23 @@ mod inline_hint_tests {
         let (count, module) = inline_count(&source);
         assert_eq!(count, 0);
         assert!(main_has_call(&module));
+    }
+
+    #[test]
+    fn a_panic_path_does_not_count_against_the_size_limit() {
+        let mut body = String::from("entry:\n %t0 = add.i64 1, 1\n");
+        for i in 1..24 {
+            body.push_str(&format!(" %t{i} = add.i64 %t{}, 1\n", i - 1));
+        }
+        body.push_str(" %c = eq.i64 %t23, 0\n br %c, fail, ok\nok:\n ret.i64 %t23\nfail:\n");
+        for i in 0..12 {
+            body.push_str(&format!(" %p{i} = add.i64 1, {i}\n"));
+        }
+        body.push_str(" unreachable\n");
+        let callee = format!("fn @big() -> i64 {{\n{body}}}\n");
+        let (count, module) = inline_count(&main_source(&callee));
+        assert_eq!(count, 1);
+        assert!(!main_has_call(&module));
     }
 
     #[test]
