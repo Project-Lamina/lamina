@@ -2812,3 +2812,34 @@ mod objects {
         }
     }
 }
+
+#[test]
+fn assembly_is_the_same_for_every_codegen_unit_count() {
+    let mut source = String::from(
+        "fn @g0(i64 %a) -> i64 {\nentry:\n    %t = add.i64 %a, 1\n    ret.i64 %t\n}\n",
+    );
+    for i in 1..24 {
+        source.push_str(&format!(
+            "fn @g{i}(i64 %a) -> i64 {{\nentry:\n    %t = add.i64 %a, {i}\n    %r = call @g{}(%t)\n    %c = eq.i64 %r, 0\n    br %c, zero, other\nzero:\n    ret.i64 %t\nother:\n    %u = mul.i64 %r, %t\n    ret.i64 %u\n}}\n",
+            i - 1
+        ));
+    }
+    let ir = parse_module(&source).unwrap();
+    let module = from_ir_x86_64(&ir, "units").unwrap();
+    let render = |units: usize| {
+        let mut output = Vec::new();
+        crate::mir_codegen::generate_mir_to_target_with_settings(
+            &module,
+            &mut output,
+            &Target::new(TargetArchitecture::X86_64, TargetOperatingSystem::Linux),
+            units,
+            &crate::mir_codegen::settings::MirCodegenSettings::default(),
+        )
+        .unwrap();
+        output
+    };
+    let serial = render(1);
+    assert_eq!(serial, render(2));
+    assert_eq!(serial, render(7));
+    assert_eq!(serial, render(64));
+}
