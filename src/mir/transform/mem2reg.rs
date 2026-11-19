@@ -154,13 +154,21 @@ fn promote(func: &mut Function) -> bool {
 
     for block in &func.blocks {
         for inst in &block.instructions {
-            let uses = inst.use_regs();
-            for (pointer, slot) in &pointer_slot {
-                let count = uses.iter().filter(|r| **r == pointer).count();
-                if count == 0 {
+            let mut counted: Vec<(&Register, usize)> = Vec::new();
+            for &used in &inst.use_regs() {
+                if !pointer_slot.contains_key(used) {
                     continue;
                 }
-                let Some(info) = slots.get_mut(slot) else {
+                match counted.iter_mut().find(|(pointer, _)| *pointer == used) {
+                    Some(entry) => entry.1 += 1,
+                    None => counted.push((used, 1)),
+                }
+            }
+            for (pointer, count) in counted {
+                let Some(&slot) = pointer_slot.get(pointer) else {
+                    continue;
+                };
+                let Some(info) = slots.get_mut(&slot) else {
                     continue;
                 };
                 match direct_access(inst, pointer, count) {
