@@ -223,7 +223,7 @@ impl fmt::Display for TransformError {
 }
 
 /// Trait for MIR transformation passes.
-pub trait Transform {
+pub trait Transform: Send + Sync {
     /// Unique name for this transform
     fn name(&self) -> &'static str;
 
@@ -615,26 +615,75 @@ impl TransformPipeline {
     }
 
     fn apply_function_stages(&self, module: &mut Module) -> Result<TransformStats, TransformError> {
+        self.apply_function_stages_on(module, optimization_workers())
+    }
+
+    fn apply_function_stages_on(
+        &self,
+        module: &mut Module,
+        workers: usize,
+    ) -> Result<TransformStats, TransformError> {
         let mut total_stats = TransformStats::default();
-        let mut failed_functions = Vec::new();
         let callees: CalleeSignatures = module
             .functions
             .iter()
             .map(|(name, func)| (name.clone(), CalleeShape::of(&func.sig)))
             .collect();
 
-        for (func_name, func) in module.functions.iter_mut() {
-            match self.apply_to_function_with(func, &callees) {
+        // Functions do not interact here, so they are spread over workers. Largest
+        // first, dealt round-robin, keeps the workers close to even.
+        let mut work: Vec<(&String, &mut Function)> = module.functions.iter_mut().collect();
+        work.sort_by_key(|(name, func)| {
+            let size: usize = func.blocks.iter().map(|b| b.instructions.len()).sum();
+            (std::cmp::Reverse(size), (*name).clone())
+        });
+        let workers = workers.min(work.len()).max(1);
+        let mut buckets: Vec<Vec<(&String, &mut Function)>> =
+            (0..workers).map(|_| Vec::new()).collect();
+        for (index, item) in work.into_iter().enumerate() {
+            buckets[index % workers].push(item);
+        }
+
+        let callees = &callees;
+        let outcomes: Vec<(String, Result<TransformStats, TransformError>)> =
+            std::thread::scope(|scope| {
+                let handles: Vec<_> = buckets
+                    .into_iter()
+                    .map(|bucket| {
+                        scope.spawn(move || {
+                            bucket
+                                .into_iter()
+                                .map(|(name, func)| {
+                                    (name.clone(), self.apply_to_function_with(func, callees))
+                                })
+                                .collect::<Vec<_>>()
+                        })
+                    })
+                    .collect();
+                handles
+                    .into_iter()
+                    .flat_map(|handle| {
+                        handle
+                            .join()
+                            .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+                    })
+                    .collect()
+            });
+
+        let mut failed_functions = Vec::new();
+        for (func_name, outcome) in outcomes {
+            match outcome {
                 Ok(func_stats) => {
                     total_stats.transforms_run += func_stats.transforms_run;
                     total_stats.transforms_changed += func_stats.transforms_changed;
                     total_stats.iterations += func_stats.iterations;
                 }
                 Err(e) => {
-                    failed_functions.push((func_name.clone(), e));
+                    failed_functions.push((func_name, e));
                 }
             }
         }
+        failed_functions.sort_by(|a, b| a.0.cmp(&b.0));
 
         if !failed_functions.is_empty() && total_stats.transforms_run == 0 {
             return Err(TransformError::AllFunctionsFailed {
@@ -665,6 +714,18 @@ impl TransformPipeline {
     pub fn is_empty(&self) -> bool {
         self.transforms.is_empty()
     }
+}
+
+/// Threads for the per-function stages: `LAMINA_JOBS` when set, else the CPU count.
+fn optimization_workers() -> usize {
+    std::env::var("LAMINA_JOBS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|&jobs| jobs > 0)
+        .unwrap_or_else(|| {
+            std::thread::available_parallelism()
+                .map_or(1, std::num::NonZero::get)
+        })
 }
 
 impl Default for TransformPipeline {
@@ -755,6 +816,30 @@ ret.i64 %s
                 assert!(caller.blocks.iter().flat_map(|b| &b.instructions).any(|i| matches!(&i.instr, Instruction::IntBinary { lhs: Operand::Register(reg), .. } if reg == &caller.sig.params[0].reg)));
             }
         }
+    }
+
+    #[test]
+    fn pipeline_output_does_not_depend_on_worker_count() {
+        let source = (0..12)
+            .map(|i| {
+                format!(
+                    "fn @f{i}(i64 %a) -> i64 {{\nentry:\n    %s = stackalloc.i64\n    store.i64 %s, %a\n    %v = load.i64 %s\n    %w = add.i64 %v, {i}\n    %t = eq.i64 %w, 0\n    br %t, one, two\none:\n    ret.i64 %w\ntwo:\n    %x = mul.i64 %w, %w\n    ret.i64 %x\n}}\n"
+                )
+            })
+            .collect::<String>();
+        let ir = crate::parser::parse_module(&source).expect("parse");
+        let lowered = crate::mir::codegen::from_ir_x86_64(&ir, "workers").expect("lower");
+        let pipeline = TransformPipeline::default_for_opt_level(2);
+        let render = |workers: usize| {
+            let mut module = lowered.clone();
+            pipeline
+                .apply_function_stages_on(&mut module, workers)
+                .expect("stages");
+            format!("{module}")
+        };
+        let serial = render(1);
+        assert_eq!(serial, render(3));
+        assert_eq!(serial, render(16));
     }
 
     #[test]
