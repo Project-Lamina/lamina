@@ -308,6 +308,7 @@ pub mod target; // Re-exports from lamina-platform for backward compatibility
 pub mod timing;
 
 mod cache;
+mod dense_set;
 
 pub mod error;
 pub mod ir;

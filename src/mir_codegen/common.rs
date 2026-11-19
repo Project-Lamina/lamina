@@ -12,6 +12,7 @@ use std::{
     thread,
 };
 
+use crate::dense_set::DenseSet;
 use crate::{
     error::LaminaError,
     mir::{
@@ -1858,6 +1859,35 @@ pub(super) fn block_live_out(func: &Function) -> Vec<HashSet<VirtualReg>> {
     live_out
 }
 
+fn dense_id(ids: &HashMap<VirtualReg, usize>, reg: &Register) -> Option<usize> {
+    match reg {
+        Register::Virtual(v) => ids.get(v).copied(),
+        Register::Physical(_) => None,
+    }
+}
+
+fn holders_of<'a, R: Copy + Eq>(
+    holders: &'a mut Vec<(R, DenseSet)>,
+    reg: R,
+    width: usize,
+) -> &'a mut DenseSet {
+    let position = match holders.iter().position(|(held, _)| *held == reg) {
+        Some(position) => position,
+        None => {
+            holders.push((reg, DenseSet::new(width)));
+            holders.len() - 1
+        }
+    };
+    &mut holders[position].1
+}
+
+struct LivePoint {
+    before: DenseSet,
+    after: DenseSet,
+    defined: Option<usize>,
+    dying: Option<(usize, usize)>,
+}
+
 pub(super) fn coalesce_dying_inputs<R: Copy + Eq>(
     func: &Function,
     intervals: &[LiveInterval],
@@ -1893,13 +1923,50 @@ pub(super) fn coalesce_dying_inputs<R: Copy + Eq>(
             _ => {}
         }
     }
-    let live_out = block_live_out(func);
-    let mut definitions = HashMap::new();
+    let live_out_sets = block_live_out(func);
+    let mut ids: HashMap<VirtualReg, usize> = HashMap::new();
+    let mut intern = |v: VirtualReg| {
+        let next = ids.len();
+        *ids.entry(v).or_insert(next)
+    };
     for inst in func.blocks.iter().flat_map(|block| &block.instructions) {
         if let Some(dst) = inst.def_reg().and_then(virtual_reg) {
-            *definitions.entry(dst).or_insert(0) += 1;
+            intern(dst);
+        }
+        for used in inst.use_regs().into_iter().filter_map(virtual_reg) {
+            intern(used);
         }
     }
+    for set in &live_out_sets {
+        for &v in set {
+            intern(v);
+        }
+    }
+    let width = ids.len();
+    let dense_set = |set: &HashSet<VirtualReg>| {
+        let mut dense = DenseSet::new(width);
+        for v in set {
+            if let Some(&id) = ids.get(v) {
+                dense.insert(id);
+            }
+        }
+        dense
+    };
+    let live_out: Vec<DenseSet> = live_out_sets.iter().map(dense_set).collect();
+
+    let mut definitions = vec![0usize; width];
+    for inst in func.blocks.iter().flat_map(|block| &block.instructions) {
+        if let Some(id) = inst.def_reg().and_then(|reg| dense_id(&ids, reg)) {
+            definitions[id] += 1;
+        }
+    }
+    let params: HashSet<usize> = func
+        .sig
+        .params
+        .iter()
+        .filter_map(|param| dense_id(&ids, &param.reg))
+        .collect();
+
     let mut candidates = Vec::new();
     let mut block_start = func
         .blocks
@@ -1915,20 +1982,24 @@ pub(super) fn coalesce_dying_inputs<R: Copy + Eq>(
             if let Some((dst, src)) = dying_input(inst)
                 && !(matches!(&inst.instr, Instruction::IntBinary { .. })
                     && !affinities.contains(&(dst, src)))
-                && !live.contains(&src)
-                && definitions.get(&dst) == Some(&1)
-                && !func
-                    .sig
-                    .params
-                    .iter()
-                    .any(|param| virtual_reg(&param.reg) == Some(dst))
+                && let (Some(dst_id), Some(src_id)) =
+                    (ids.get(&dst).copied(), ids.get(&src).copied())
+                && !live.contains(src_id)
+                && definitions[dst_id] == 1
+                && !params.contains(&dst_id)
             {
                 block_candidates.push((block_start + offset, dst, src));
             }
-            if let Some(dst) = dst {
-                live.remove(&dst);
+            if let Some(dst_id) = dst.and_then(|dst| ids.get(&dst).copied()) {
+                live.remove(dst_id);
             }
-            live.extend(inst.use_regs().into_iter().filter_map(virtual_reg));
+            for used in inst
+                .use_regs()
+                .into_iter()
+                .filter_map(|reg| dense_id(&ids, reg))
+            {
+                live.insert(used);
+            }
         }
         candidates.extend(block_candidates);
     }
@@ -1937,32 +2008,59 @@ pub(super) fn coalesce_dying_inputs<R: Copy + Eq>(
         return plan;
     }
 
-    let mut points = Vec::new();
+    let mut points: Vec<LivePoint> = Vec::new();
     for (index, block) in func.blocks.iter().enumerate() {
         let mut live = live_out[index].clone();
-        let mut block_points = Vec::new();
+        let start = points.len();
         for inst in block.instructions.iter().rev() {
             let after = live.clone();
-            let dst = inst.def_reg().and_then(virtual_reg);
+            let dst = inst
+                .def_reg()
+                .and_then(virtual_reg)
+                .and_then(|v| ids.get(&v).copied());
             if let Some(dst) = dst {
-                live.remove(&dst);
+                live.remove(dst);
             }
-            live.extend(inst.use_regs().into_iter().filter_map(virtual_reg));
-            block_points.push((inst, live.clone(), after, dst));
+            for used in inst
+                .use_regs()
+                .into_iter()
+                .filter_map(|reg| dense_id(&ids, reg))
+            {
+                live.insert(used);
+            }
+            let dying =
+                dying_input(inst).and_then(|(dst, src)| Some((*ids.get(&dst)?, *ids.get(&src)?)));
+            points.push(LivePoint {
+                before: live.clone(),
+                after,
+                defined: dst,
+                dying,
+            });
         }
-        points.extend(block_points.into_iter().rev());
+        points[start..].reverse();
     }
     let by_reg: HashMap<_, _> = intervals
         .iter()
         .map(|interval| (interval.vreg, interval))
         .collect();
-    let mut touching: HashMap<VirtualReg, Vec<usize>> = HashMap::new();
-    for (index, (_, before, after, defined)) in points.iter().enumerate() {
-        for vreg in before.iter().chain(after).chain(defined.iter()) {
-            let list = touching.entry(*vreg).or_default();
+    let mut touching: Vec<Vec<usize>> = vec![Vec::new(); width];
+    for (index, point) in points.iter().enumerate() {
+        for id in point
+            .before
+            .iter()
+            .chain(point.after.iter())
+            .chain(point.defined)
+        {
+            let list = &mut touching[id];
             if list.last() != Some(&index) {
                 list.push(index);
             }
+        }
+    }
+    let mut holders: Vec<(R, DenseSet)> = Vec::new();
+    for (vreg, allocation) in &plan {
+        if let (Allocation::Register(reg), Some(&id)) = (allocation, ids.get(vreg)) {
+            holders_of(&mut holders, *reg, width).insert(id);
         }
     }
     for (_, dst, src) in candidates {
@@ -1974,27 +2072,37 @@ pub(super) fn coalesce_dying_inputs<R: Copy + Eq>(
         if !allowed(output, reg) {
             continue;
         }
-        let held = |other: &VirtualReg| {
-            *other != dst && plan.get(other) == Some(&Allocation::Register(reg))
+        let Some(dst_id) = ids.get(&dst).copied() else {
+            continue;
         };
-        let conflicts = touching.get(&dst).is_some_and(|indices| {
-            indices.iter().any(|&index| {
-                let (inst, before, after, defined) = &points[index];
-                let dying = dying_input(inst);
-                let dst_before = before.contains(&dst);
-                (dst_before && before.iter().any(held))
-                    || (after.contains(&dst) && after.iter().any(held))
-                    || (*defined == Some(dst)
-                        && before
-                            .iter()
-                            .any(|other| held(other) && dying != Some((dst, *other))))
-                    || (dst_before
-                        && defined.is_some_and(|other| held(&other) && dying != Some((other, dst))))
-            })
+        let mut held = holders
+            .iter()
+            .find(|(held, _)| *held == reg)
+            .map_or_else(|| DenseSet::new(width), |(_, set)| set.clone());
+        held.remove(dst_id);
+        let conflicts = touching[dst_id].iter().any(|&index| {
+            let point = &points[index];
+            let dst_before = point.before.contains(dst_id);
+            let before_held = point.before.intersection_count(&held);
+            (dst_before && before_held > 0)
+                || (point.after.contains(dst_id) && point.after.intersection_count(&held) > 0)
+                || (point.defined == Some(dst_id)
+                    && before_held
+                        > usize::from(point.dying.is_some_and(|(d, o)| {
+                            d == dst_id && point.before.contains(o) && held.contains(o)
+                        })))
+                || (dst_before
+                    && point.defined.is_some_and(|other| {
+                        held.contains(other) && point.dying != Some((other, dst_id))
+                    }))
         });
         if conflicts {
             continue;
         }
+        if let Some(Allocation::Register(previous)) = plan.get(&dst).copied() {
+            holders_of(&mut holders, previous, width).remove(dst_id);
+        }
+        holders_of(&mut holders, reg, width).insert(dst_id);
         plan.insert(dst, Allocation::Register(reg));
     }
     plan
