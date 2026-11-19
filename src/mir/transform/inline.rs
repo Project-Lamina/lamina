@@ -44,6 +44,138 @@ const MAX_EXPANSIONS: usize = 1000;
 const CALLEE_SIZE_LIMIT: usize = 30;
 const ANNOTATED_CALLEE_SIZE_LIMIT: usize = 200;
 
+/// Callee facts the inliner checks at each call site, kept current as bodies change.
+struct CalleeCache {
+    names: Vec<String>,
+    index_of: HashMap<String, usize>,
+    edges: Vec<Vec<usize>>,
+    recursive: HashSet<String>,
+    body_expandable: HashMap<String, bool>,
+}
+
+impl CalleeCache {
+    fn new(module: &Module) -> Self {
+        let mut names: Vec<String> = module.functions.keys().cloned().collect();
+        names.sort();
+        let index_of = names
+            .iter()
+            .enumerate()
+            .map(|(index, name)| (name.clone(), index))
+            .collect();
+        let mut cache = Self {
+            names,
+            index_of,
+            edges: Vec::new(),
+            recursive: HashSet::new(),
+            body_expandable: HashMap::new(),
+        };
+        cache.edges = cache
+            .names
+            .iter()
+            .map(|name| Self::calls_of(module, name, &cache.index_of))
+            .collect();
+        cache
+    }
+
+    fn calls_of(module: &Module, name: &str, index_of: &HashMap<String, usize>) -> Vec<usize> {
+        module.functions[name]
+            .blocks
+            .iter()
+            .flat_map(|b| &b.instructions)
+            .filter_map(|i| match &i.instr {
+                Instruction::Call { name, .. } | Instruction::TailCall { name, .. } => {
+                    index_of.get(name).copied()
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Rereads the calls of `name` after its body changed, and drops its body fact.
+    fn body_changed(&mut self, module: &Module, name: &str) {
+        self.body_expandable.remove(name);
+        if let Some(&index) = self.index_of.get(name) {
+            self.edges[index] = Self::calls_of(module, name, &self.index_of);
+        }
+    }
+
+    fn refresh_recursion(&mut self) {
+        let mut tarjan = Tarjan::new(self.names.len());
+        for node in 0..self.names.len() {
+            if tarjan.order[node].is_none() {
+                tarjan.visit(node, &self.edges);
+            }
+        }
+        self.recursive = self
+            .names
+            .iter()
+            .zip(tarjan.recursive)
+            .filter(|(_, recursive)| *recursive)
+            .map(|(name, _)| name.clone())
+            .collect();
+    }
+}
+
+struct Tarjan {
+    order: Vec<Option<usize>>,
+    low: Vec<usize>,
+    on_stack: Vec<bool>,
+    stack: Vec<usize>,
+    recursive: Vec<bool>,
+    next: usize,
+}
+
+impl Tarjan {
+    fn new(nodes: usize) -> Self {
+        Self {
+            order: vec![None; nodes],
+            low: vec![0; nodes],
+            on_stack: vec![false; nodes],
+            stack: Vec::new(),
+            recursive: vec![false; nodes],
+            next: 0,
+        }
+    }
+
+    fn visit(&mut self, node: usize, edges: &[Vec<usize>]) {
+        self.order[node] = Some(self.next);
+        self.low[node] = self.next;
+        self.next += 1;
+        self.stack.push(node);
+        self.on_stack[node] = true;
+        for &target in &edges[node] {
+            if target == node {
+                self.recursive[node] = true;
+            }
+            match self.order[target] {
+                None => {
+                    self.visit(target, edges);
+                    self.low[node] = self.low[node].min(self.low[target]);
+                }
+                Some(target_order) if self.on_stack[target] => {
+                    self.low[node] = self.low[node].min(target_order);
+                }
+                Some(_) => {}
+            }
+        }
+        if Some(self.low[node]) == self.order[node] {
+            let mut members = Vec::new();
+            while let Some(member) = self.stack.pop() {
+                self.on_stack[member] = false;
+                members.push(member);
+                if member == node {
+                    break;
+                }
+            }
+            if members.len() > 1 {
+                for member in members {
+                    self.recursive[member] = true;
+                }
+            }
+        }
+    }
+}
+
 /// Module-level function inlining that analyzes the entire program.
 #[derive(Default)]
 pub struct ModuleInlining {
@@ -61,13 +193,15 @@ impl ModuleInlining {
             .map_err(|errors| TransformError::VerificationFailed { errors })?;
         let mut count = 0;
         let mut expanded: HashSet<String> = HashSet::new();
+        let mut cache = CalleeCache::new(module);
         loop {
-            Self::undo_tail_calls_to_expand(module);
-            let mut sites = Vec::new();
+            cache.refresh_recursion();
+            Self::undo_tail_calls_to_expand(module, &mut cache);
             let mut names: Vec<_> = module.functions.keys().cloned().collect();
             names.sort();
-            for name in names {
-                let caller = &module.functions[&name];
+            let mut site = None;
+            'scan: for name in &names {
+                let caller = &module.functions[name];
                 for (block_index, block) in caller.blocks.iter().enumerate() {
                     for (index, instruction) in block.instructions.iter().enumerate() {
                         if let Instruction::Call {
@@ -76,20 +210,20 @@ impl ModuleInlining {
                             ret,
                             ..
                         } = &instruction.instr
-                            && Self::can_expand(module, callee, args.len())
+                            && Self::can_expand(module, &mut cache, callee, args.len())
                             && Self::result_slot_is_expandable(
                                 caller,
                                 &module.functions[callee],
                                 ret,
                             )
                         {
-                            sites.push((name.clone(), block_index, index, callee.clone()));
+                            site = Some((name.clone(), block_index, index, callee.clone()));
+                            break 'scan;
                         }
                     }
                 }
             }
-            let Some((caller_name, block_index, index, callee_name)) = sites.into_iter().next()
-            else {
+            let Some((caller_name, block_index, index, callee_name)) = site else {
                 break;
             };
             if count >= MAX_EXPANSIONS {
@@ -108,6 +242,7 @@ impl ModuleInlining {
                 .get_mut(&caller_name)
                 .ok_or(TransformError::InvalidState("missing caller"))?;
             self.expand(caller, block_index, index, &callee)?;
+            cache.body_changed(module, &caller_name);
             count += 1;
         }
         Self::drop_unreferenced(module, &expanded);
@@ -117,7 +252,28 @@ impl ModuleInlining {
         Ok(count)
     }
 
-    fn can_expand(module: &Module, callee: &str, arg_count: usize) -> bool {
+    fn can_expand(
+        module: &Module,
+        cache: &mut CalleeCache,
+        callee: &str,
+        arg_count: usize,
+    ) -> bool {
+        let Some(function) = module.functions.get(callee) else {
+            return false;
+        };
+        if function.sig.params.len() != arg_count || cache.recursive.contains(callee) {
+            return false;
+        }
+        if let Some(&expandable) = cache.body_expandable.get(callee) {
+            return expandable;
+        }
+        let expandable = Self::body_expandable(module, callee);
+        cache.body_expandable.insert(callee.to_string(), expandable);
+        expandable
+    }
+
+    /// The callee facts that depend only on its own body and the module's external names.
+    fn body_expandable(module: &Module, callee: &str) -> bool {
         let Some(function) = module.functions.get(callee) else {
             return false;
         };
@@ -131,14 +287,12 @@ impl ModuleInlining {
                 .flat_map(|b| &b.instructions)
                 .any(|i| matches!(&i.instr, Instruction::InlineAsm { .. }))
             && Self::expansion_size(function) <= Self::callee_size_limit(function)
-            && function.sig.params.len() == arg_count
             && !function.sig.sret_claimed
             && function
                 .sig
                 .params
                 .iter()
                 .all(|param| param.aggregate.is_none())
-            && !Self::is_recursive(callee, callee, module, &mut HashSet::new())
             && function
                 .blocks
                 .iter()
@@ -153,14 +307,14 @@ impl ModuleInlining {
     /// Tail call optimization runs first, so a small function ending in a call reaches
     /// here as a tail call, which nothing can expand. Turn back the ones that will expand.
     /// The second run of the function passes makes tail calls of whatever is left.
-    fn undo_tail_calls_to_expand(module: &mut Module) {
+    fn undo_tail_calls_to_expand(module: &mut Module, cache: &mut CalleeCache) {
         let mut sites = Vec::new();
         for (name, caller) in &module.functions {
             for (block_index, block) in caller.blocks.iter().enumerate() {
                 if let Some(Instruction::TailCall { name: callee, args }) =
                     block.instructions.last().map(|i| &i.instr)
                     && callee != name
-                    && Self::can_expand(module, callee, args.len())
+                    && Self::can_expand(module, cache, callee, args.len())
                     && module.functions[callee].sig.ret_aggregate.is_none()
                     && module.functions[callee].sig.ret_ty == caller.sig.ret_ty
                 {
@@ -168,10 +322,12 @@ impl ModuleInlining {
                 }
             }
         }
+        let mut changed = Vec::new();
         for (name, block_index) in sites {
             let Some(caller) = module.functions.get_mut(&name) else {
                 continue;
             };
+            changed.push(name.clone());
             let returns = caller.sig.ret_ty.is_some();
             let ret_ty = caller.sig.ret_ty;
             let id = next_virtual_id(caller);
@@ -199,6 +355,9 @@ impl ModuleInlining {
                 },
                 last.loc,
             ));
+        }
+        for name in changed {
+            cache.body_changed(module, &name);
         }
     }
 
@@ -268,32 +427,6 @@ impl ModuleInlining {
         } else {
             CALLEE_SIZE_LIMIT
         }
-    }
-
-    fn is_recursive(
-        root: &str,
-        current: &str,
-        module: &Module,
-        seen: &mut HashSet<String>,
-    ) -> bool {
-        if !seen.insert(current.to_string()) {
-            return false;
-        }
-        module.functions.get(current).is_some_and(|function| {
-            function
-                .blocks
-                .iter()
-                .flat_map(|b| &b.instructions)
-                .any(|i| {
-                    if let Instruction::Call { name, .. } | Instruction::TailCall { name, .. } =
-                        &i.instr
-                    {
-                        name == root || Self::is_recursive(root, name, module, seen)
-                    } else {
-                        false
-                    }
-                })
-        })
     }
 
     /// Whether the caller can take the callee's aggregate result from its inlined return
@@ -1273,5 +1406,54 @@ mod inline_hint_tests {
         let (count, module) = inline_count(source);
         assert_eq!(count, 0);
         assert!(main_has_call(&module));
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod recursion_tests {
+    use super::Tarjan;
+
+    #[test]
+    fn tarjan_marks_exactly_the_nodes_on_a_cycle() {
+        let mut state = 3u64;
+        for nodes in 1..=9usize {
+            for _ in 0..60 {
+                let mut edges: Vec<Vec<usize>> = vec![Vec::new(); nodes];
+                for edge_list in edges.iter_mut() {
+                    for _ in 0..(state % 3) {
+                        state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
+                        edge_list.push(((state >> 33) as usize) % nodes);
+                    }
+                }
+                let mut reach = vec![vec![false; nodes]; nodes];
+                for (from, targets) in edges.iter().enumerate() {
+                    for &to in targets {
+                        reach[from][to] = true;
+                    }
+                }
+                for via in 0..nodes {
+                    for from in 0..nodes {
+                        for to in 0..nodes {
+                            if reach[from][via] && reach[via][to] {
+                                reach[from][to] = true;
+                            }
+                        }
+                    }
+                }
+                let mut tarjan = Tarjan::new(nodes);
+                for node in 0..nodes {
+                    if tarjan.order[node].is_none() {
+                        tarjan.visit(node, &edges);
+                    }
+                }
+                for node in 0..nodes {
+                    assert_eq!(
+                        tarjan.recursive[node], reach[node][node],
+                        "node {node} of {edges:?}"
+                    );
+                }
+            }
+        }
     }
 }
