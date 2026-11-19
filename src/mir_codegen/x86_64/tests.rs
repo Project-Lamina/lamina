@@ -1911,7 +1911,8 @@ fn overflow_flags_read_the_condition_the_signedness_names() {
     let mut output = Vec::new();
     generate_mir_x86_64(&mir, &mut output, TargetOperatingSystem::Linux).unwrap();
     let narrow = String::from_utf8(output).unwrap();
-    assert!(narrow.contains("    setne %al"), "{narrow}");
+    assert!(narrow.contains("    addl %"), "{narrow}");
+    assert!(narrow.contains("    seto %al"), "{narrow}");
 }
 
 #[test]

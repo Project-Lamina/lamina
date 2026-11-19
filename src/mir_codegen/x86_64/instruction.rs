@@ -2601,6 +2601,41 @@ pub(super) fn size_suffix(ty: &MirType, pointer_width: PointerWidth) -> &'static
     }
 }
 
+/// The name of a 64-bit general register at the given byte width.
+fn sized_gpr(reg: &str, size: i64) -> Option<String> {
+    let legacy = match reg {
+        "rax" => ["eax", "ax", "al"],
+        "rbx" => ["ebx", "bx", "bl"],
+        "rcx" => ["ecx", "cx", "cl"],
+        "rdx" => ["edx", "dx", "dl"],
+        "rsi" => ["esi", "si", "sil"],
+        "rdi" => ["edi", "di", "dil"],
+        _ => {
+            let number = reg.strip_prefix('r')?;
+            if !number.chars().all(|c| c.is_ascii_digit())
+                || !(8..=15).contains(&number.parse::<u8>().ok()?)
+            {
+                return None;
+            }
+            return Some(match size {
+                1 => format!("{reg}b"),
+                2 => format!("{reg}w"),
+                4 => format!("{reg}d"),
+                _ => reg.to_string(),
+            });
+        }
+    };
+    Some(
+        match size {
+            1 => legacy[2],
+            2 => legacy[1],
+            4 => legacy[0],
+            _ => return None,
+        }
+        .to_string(),
+    )
+}
+
 /// The sub-register of `rax` holding exactly the bytes of this type.
 pub(super) fn rax_for(ty: &MirType, pointer_width: PointerWidth) -> &'static str {
     match ty.size_bytes(pointer_width) {
@@ -2673,6 +2708,22 @@ pub(super) fn emit_overflow_flags(
     let scratch = reg_alloc.alloc_scratch().ok_or_else(scratch_error)?;
     load_operand_to_rax(lhs, writer, reg_alloc, stack_slots)?;
     load_operand_to_register(rhs, writer, reg_alloc, stack_slots, scratch)?;
+    let two_operand_mul = !matches!(op, IntOverflowOp::Mul) || (signed && size >= 2);
+    if size < 8
+        && two_operand_mul
+        && let Some(sub) = sized_gpr(scratch, size as i64)
+    {
+        // At the operand width the flags already say whether the result left the range.
+        let sfx = size_suffix(ty, pointer_width);
+        let ax = rax_for(ty, pointer_width);
+        match op {
+            IntOverflowOp::Add => writeln!(writer, "    add{sfx} %{sub}, %{ax}")?,
+            IntOverflowOp::Sub => writeln!(writer, "    sub{sfx} %{sub}, %{ax}")?,
+            IntOverflowOp::Mul => writeln!(writer, "    imul{sfx} %{sub}, %{ax}")?,
+        }
+        let (flag, inverted) = if signed { ("o", "no") } else { ("c", "nc") };
+        return Ok((flag, inverted, scratch));
+    }
     if size < 8 {
         // Below 64 bits the exact result fits in a register, so the question is
         // whether re-reading it at the operand width gives the same number.
