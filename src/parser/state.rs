@@ -14,6 +14,7 @@ pub struct CallSite<'a> {
 pub struct ParserState<'a> {
     input: &'a str,
     bytes: &'a [u8],
+    newlines: Vec<usize>,
     position: usize,
     type_depth: usize,
     pub call_sites: Vec<CallSite<'a>>,
@@ -27,6 +28,11 @@ impl<'a> ParserState<'a> {
         ParserState {
             input,
             bytes: input.as_bytes(),
+            newlines: input
+                .bytes()
+                .enumerate()
+                .filter_map(|(at, byte)| (byte == b'\n').then_some(at))
+                .collect(),
             position: 0,
             type_depth: 0,
             call_sites: Vec::new(),
@@ -560,22 +566,16 @@ impl<'a> ParserState<'a> {
 
     /// Gets the line and column number for the current position.
     fn get_line_column(&self) -> (usize, usize) {
-        let mut line = 1;
-        let mut column = 1;
-
-        for (i, ch) in self.input.char_indices() {
-            if i >= self.position {
-                break;
-            }
-            if ch == '\n' {
-                line += 1;
-                column = 1;
-            } else {
-                column += 1;
-            }
+        let mut end = self.position.min(self.input.len());
+        while !self.input.is_char_boundary(end) {
+            end += 1;
         }
-
-        (line, column)
+        let newlines_before = self.newlines.partition_point(|&at| at < end);
+        let line_start = newlines_before
+            .checked_sub(1)
+            .map_or(0, |last| self.newlines[last] + 1);
+        let column = self.input[line_start..end].chars().count() + 1;
+        (newlines_before + 1, column)
     }
 
     /// Gets a context string showing the line where the error occurred.
@@ -635,5 +635,38 @@ impl<'a> ParserState<'a> {
     /// Returns the bytes slice for peeking.
     pub fn bytes(&self) -> &[u8] {
         self.bytes
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::ParserState;
+
+    #[test]
+    fn error_position_counts_characters_on_its_line() {
+        let input = "first\nsecond \u{fc} line\nthird";
+        let mut state = ParserState::new(input);
+        state.set_position(input.find("line").unwrap());
+        assert!(
+            state
+                .error("here")
+                .to_string()
+                .contains("at line 2, column 10")
+        );
+        state.set_position(input.find('\n').unwrap() + 1);
+        assert!(
+            state
+                .error("here")
+                .to_string()
+                .contains("at line 2, column 1")
+        );
+        state.set_position(input.len() + 5);
+        assert!(
+            state
+                .error("here")
+                .to_string()
+                .contains("at line 3, column 6")
+        );
     }
 }
