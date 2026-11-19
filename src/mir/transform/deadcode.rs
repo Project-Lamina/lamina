@@ -1,5 +1,6 @@
 //! Dead code elimination transform for MIR.
 
+use crate::dense_set::DenseSet;
 use crate::mir::{
     Block, Function, Instruction, Module, Register,
     transform::{Transform, TransformCategory, TransformError, TransformLevel},
@@ -43,40 +44,122 @@ impl Transform for DeadCodeElimination {
     }
 }
 
+/// Dense numbering of the registers a function names, so liveness sets are bit sets.
+struct RegisterIds {
+    ids: HashMap<Register, usize>,
+}
+
+impl RegisterIds {
+    fn new(func: &Function) -> Self {
+        let mut ids: HashMap<Register, usize> = HashMap::new();
+        for inst in func.blocks.iter().flat_map(|block| &block.instructions) {
+            for reg in inst.def_reg().into_iter().chain(inst.use_regs()) {
+                if !ids.contains_key(reg) {
+                    let next = ids.len();
+                    ids.insert(reg.clone(), next);
+                }
+            }
+        }
+        Self { ids }
+    }
+
+    fn width(&self) -> usize {
+        self.ids.len()
+    }
+
+    fn id(&self, reg: &Register) -> Option<usize> {
+        self.ids.get(reg).copied()
+    }
+
+    fn is_live(&self, live: &DenseSet, reg: &Register) -> bool {
+        self.ids.get(reg).is_some_and(|&id| live.contains(id))
+    }
+
+    fn insert(&self, live: &mut DenseSet, reg: &Register) {
+        if let Some(&id) = self.ids.get(reg) {
+            live.insert(id);
+        }
+    }
+
+    fn remove(&self, live: &mut DenseSet, reg: &Register) {
+        if let Some(&id) = self.ids.get(reg) {
+            live.remove(id);
+        }
+    }
+}
+
+/// What the liveness fixpoint needs from one instruction, with registers as dense ids.
+struct LiveStep {
+    def: Option<usize>,
+    uses: Vec<usize>,
+    /// Not a terminator and free of side effects, so it can be skipped when its result
+    /// is not live.
+    removable: bool,
+}
+
 impl DeadCodeElimination {
     /// Apply dead code elimination to a function
     pub fn apply_internal(&self, func: &mut Function) -> Result<DeadCodeStats, TransformError> {
         let mut stats = DeadCodeStats::default();
         let pointer = func.pointer_width;
+        let ids = RegisterIds::new(func);
 
         // 1. Compute liveness analysis (inter-block)
-        let live_out_map = self.compute_liveness(func)?;
+        let live_out = self.compute_liveness(func, &ids)?;
 
         // 2. Remove dead instructions using liveness info
-        for block in &mut func.blocks {
-            // Start with registers live at the end of the block
-            let mut live_regs = live_out_map.get(&block.label).cloned().unwrap_or_default();
+        for (block, live_at_end) in func.blocks.iter_mut().zip(live_out) {
+            let mut live_regs = live_at_end;
 
-            let removed = self.remove_dead_instructions_in_block(block, &mut live_regs, pointer);
+            let removed =
+                self.remove_dead_instructions_in_block(block, &mut live_regs, &ids, pointer);
             stats.instructions_removed += removed;
         }
 
         Ok(stats)
     }
 
-    /// Compute liveness analysis (live-out sets for each block)
+    /// Compute liveness analysis: the registers live at the end of each block, in block
+    /// order. Blocks that share a label share one entry, as they always have.
     fn compute_liveness(
         &self,
         func: &Function,
-    ) -> Result<HashMap<String, HashSet<Register>>, TransformError> {
+        ids: &RegisterIds,
+    ) -> Result<Vec<DenseSet>, TransformError> {
         let pointer = func.pointer_width;
-        let mut live_in: HashMap<String, HashSet<Register>> = HashMap::new();
-        let mut live_out: HashMap<String, HashSet<Register>> = HashMap::new();
-
+        let width = ids.width();
+        let mut slot_of: HashMap<&str, usize> = HashMap::new();
         for block in &func.blocks {
-            live_in.insert(block.label.clone(), HashSet::new());
-            live_out.insert(block.label.clone(), HashSet::new());
+            let next = slot_of.len();
+            slot_of.entry(block.label.as_str()).or_insert(next);
         }
+        let block_slot: Vec<usize> = func
+            .blocks
+            .iter()
+            .map(|block| slot_of[block.label.as_str()])
+            .collect();
+        let steps: Vec<Vec<LiveStep>> = func
+            .blocks
+            .iter()
+            .map(|block| {
+                block
+                    .instructions
+                    .iter()
+                    .map(|instr| LiveStep {
+                        def: instr.def_reg().and_then(|reg| ids.id(reg)),
+                        uses: instr
+                            .use_regs()
+                            .into_iter()
+                            .filter_map(|reg| ids.id(reg))
+                            .collect(),
+                        removable: !instr.is_terminator()
+                            && self.has_no_side_effects(instr, pointer),
+                    })
+                    .collect()
+            })
+            .collect();
+        let mut live_in = vec![DenseSet::new(width); slot_of.len()];
+        let mut live_out = vec![DenseSet::new(width); slot_of.len()];
 
         let mut changed = true;
 
@@ -84,114 +167,94 @@ impl DeadCodeElimination {
             changed = false;
 
             // Process blocks in reverse order (heuristic for faster convergence)
-            for block in func.blocks.iter().rev() {
-                let label = &block.label;
+            for (index, block) in func.blocks.iter().enumerate().rev() {
+                let slot = block_slot[index];
 
                 // 1. Calculate LiveOut = Union(LiveIn(successors))
-                let mut current_live_out = HashSet::new();
+                let mut current_live_out = DenseSet::new(width);
                 if let Some(terminator) = block.instructions.last() {
-                    match &terminator.instr {
-                        Instruction::Jmp { target } => {
-                            if let Some(succ_live_in) = live_in.get(target) {
-                                current_live_out.extend(succ_live_in.iter().cloned());
-                            }
-                        }
+                    let successors: Vec<&String> = match &terminator.instr {
+                        Instruction::Jmp { target } => vec![target],
                         Instruction::Br {
                             true_target,
                             false_target,
                             ..
-                        } => {
-                            if let Some(succ_live_in) = live_in.get(true_target) {
-                                current_live_out.extend(succ_live_in.iter().cloned());
-                            }
-                            if let Some(succ_live_in) = live_in.get(false_target) {
-                                current_live_out.extend(succ_live_in.iter().cloned());
-                            }
+                        } => vec![true_target, false_target],
+                        Instruction::Switch { cases, default, .. } => std::iter::once(default)
+                            .chain(cases.iter().map(|(_, case_target)| case_target))
+                            .collect(),
+                        _ => Vec::new(), // Return or others have no successors within function
+                    };
+                    for target in successors {
+                        if let Some(&succ) = slot_of.get(target.as_str()) {
+                            current_live_out.union_with(&live_in[succ]);
                         }
-                        Instruction::Switch { cases, default, .. } => {
-                            if let Some(succ_live_in) = live_in.get(default) {
-                                current_live_out.extend(succ_live_in.iter().cloned());
-                            }
-                            for (_, case_target) in cases {
-                                if let Some(succ_live_in) = live_in.get(case_target) {
-                                    current_live_out.extend(succ_live_in.iter().cloned());
-                                }
-                            }
-                        }
-                        _ => {} // Return or others have no successors within function
                     }
                 }
 
-                // Safe: live_out is initialized for all blocks at function start
-                // If this fails, it indicates a bug in the initialization logic
-                let prev_live_out = live_out.get(label).ok_or(TransformError::InvalidState(
-                    "block missing from live_out map",
-                ))?;
-                if current_live_out != *prev_live_out {
-                    live_out.insert(label.clone(), current_live_out.clone());
+                if current_live_out != live_out[slot] {
+                    live_out[slot] = current_live_out.clone();
                     changed = true;
                 }
 
                 // 2. Calculate LiveIn = Use U (LiveOut - Def)
-                let mut current_live_in = current_live_out.clone();
-                for instr in block.instructions.iter().rev() {
-                    if self.is_dead_instruction(instr, &current_live_in, pointer) {
+                let mut current_live_in = current_live_out;
+                for step in steps[index].iter().rev() {
+                    if step.removable && step.def.is_none_or(|def| !current_live_in.contains(def)) {
                         continue;
                     }
-                    if let Some(def) = instr.def_reg() {
+                    if let Some(def) = step.def {
                         current_live_in.remove(def);
                     }
-                    for use_reg in instr.use_regs() {
-                        current_live_in.insert(use_reg.clone());
+                    for &use_id in &step.uses {
+                        current_live_in.insert(use_id);
                     }
                 }
 
-                // Safe: live_in is initialized for all blocks at function start
-                // If this fails, it indicates a bug in the initialization logic
-                let prev_live_in = live_in.get(label).ok_or(TransformError::InvalidState(
-                    "block missing from live_in map",
-                ))?;
-                if current_live_in != *prev_live_in {
-                    live_in.insert(label.clone(), current_live_in);
+                if current_live_in != live_in[slot] {
+                    live_in[slot] = current_live_in;
                     changed = true;
                 }
             }
         }
 
-        Ok(live_out)
+        Ok(block_slot
+            .into_iter()
+            .map(|slot| live_out[slot].clone())
+            .collect())
     }
 
     /// Remove dead instructions within a single basic block
     fn remove_dead_instructions_in_block(
         &self,
         block: &mut Block,
-        live_regs: &mut HashSet<Register>,
+        live_regs: &mut DenseSet,
+        ids: &RegisterIds,
         pointer: PointerWidth,
     ) -> usize {
+        let mut dead = vec![false; block.instructions.len()];
         let mut removed_count = 0;
-        let mut instructions_to_keep = Vec::new();
-
-        // We collect instructions to keep, then reverse them back
-        for instr in block.instructions.iter().rev() {
-            if self.is_dead_instruction(instr, live_regs, pointer) {
+        for (index, instr) in block.instructions.iter().enumerate().rev() {
+            if self.is_dead_instruction(instr, live_regs, ids, pointer) {
+                dead[index] = true;
                 removed_count += 1;
-                // Don't add to keep list
             } else {
-                instructions_to_keep.push(instr.clone());
-
-                // Update liveness for the kept instruction
                 if let Some(def_reg) = instr.def_reg() {
-                    live_regs.remove(def_reg);
+                    ids.remove(live_regs, def_reg);
                 }
                 for use_reg in instr.use_regs() {
-                    live_regs.insert(use_reg.clone());
+                    ids.insert(live_regs, use_reg);
                 }
             }
         }
 
         if removed_count > 0 {
-            instructions_to_keep.reverse();
-            block.instructions = instructions_to_keep;
+            let mut index = 0;
+            block.instructions.retain(|_| {
+                let keep = !dead[index];
+                index += 1;
+                keep
+            });
         }
 
         removed_count
@@ -201,7 +264,8 @@ impl DeadCodeElimination {
     fn is_dead_instruction(
         &self,
         instr: &Instruction,
-        live_regs: &HashSet<Register>,
+        live_regs: &DenseSet,
+        ids: &RegisterIds,
         pointer: PointerWidth,
     ) -> bool {
         // Never remove terminators
@@ -211,7 +275,7 @@ impl DeadCodeElimination {
 
         if let Some(def_reg) = instr.def_reg() {
             // If the defined register is not live, instruction is dead
-            if !live_regs.contains(def_reg) {
+            if !ids.is_live(live_regs, def_reg) {
                 // Additional check: ensure instruction has no side effects
                 return self.has_no_side_effects(instr, pointer);
             }

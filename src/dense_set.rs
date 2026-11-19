@@ -43,6 +43,12 @@ impl DenseSet {
             })
     }
 
+    pub(crate) fn union_with(&mut self, other: &Self) {
+        for (word, other) in self.words.iter_mut().zip(&other.words) {
+            *word |= other;
+        }
+    }
+
     pub(crate) fn intersection_count(&self, other: &Self) -> usize {
         self.words
             .iter()
@@ -87,5 +93,38 @@ mod tests {
         let mut expected: Vec<usize> = model.iter().copied().collect();
         expected.sort_unstable();
         assert_eq!(listed, expected);
+    }
+
+    #[test]
+    fn union_and_intersection_agree_with_the_model() {
+        let width = 130;
+        let mut state = 11;
+        for _ in 0..200 {
+            let mut a = DenseSet::new(width);
+            let mut b = DenseSet::new(width);
+            let mut model_a = HashSet::new();
+            let mut model_b = HashSet::new();
+            for _ in 0..40 {
+                let (x, y) = (
+                    step(&mut state) as usize % width,
+                    step(&mut state) as usize % width,
+                );
+                a.insert(x);
+                model_a.insert(x);
+                b.insert(y);
+                model_b.insert(y);
+            }
+            assert_eq!(
+                a.intersection_count(&b),
+                model_a.intersection(&model_b).count()
+            );
+            let mut union = a.clone();
+            union.union_with(&b);
+            let mut listed: Vec<usize> = union.iter().collect();
+            listed.sort_unstable();
+            let mut expected: Vec<usize> = model_a.union(&model_b).copied().collect();
+            expected.sort_unstable();
+            assert_eq!(listed, expected);
+        }
     }
 }
