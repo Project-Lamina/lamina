@@ -71,6 +71,7 @@ use crate::mir::{
     ssa::{SsaFunction, destroy},
     verify_function_in_pipeline,
 };
+use crate::timing;
 use std::collections::HashMap;
 use std::fmt;
 
@@ -516,18 +517,18 @@ impl TransformPipeline {
                 pass: transform.name(),
                 source: Box::new(e),
             };
-            let changed = match transform.ssa() {
-                Some(pass) => match form.ssa() {
-                    Some(graph) => pass.apply_ssa(graph).map_err(failed)?,
-                    None => false,
-                },
-                None => {
-                    let func = form.mutable()?;
-                    transform
-                        .apply_with_callees(func, callees)
-                        .map_err(failed)?
+            let changed = timing::measure(transform.name(), || -> Result<bool, TransformError> {
+                match transform.ssa() {
+                    Some(pass) => match form.ssa() {
+                        Some(graph) => pass.apply_ssa(graph).map_err(failed),
+                        None => Ok(false),
+                    },
+                    None => {
+                        let func = form.mutable()?;
+                        transform.apply_with_callees(func, callees).map_err(failed)
+                    }
                 }
-            };
+            })?;
             if changed {
                 stats.transforms_changed += 1;
             }
@@ -553,12 +554,15 @@ impl TransformPipeline {
             truncate_after_noreturn_calls(module);
             remove_dead_pure_calls(module);
         }
-        let mut total_stats = self.apply_function_stages(module)?;
+        let mut total_stats =
+            timing::measure("function_stages", || self.apply_function_stages(module))?;
         if self.inline {
-            total_stats.functions_inlined = ModuleInlining::new().inline_functions(module)?;
+            total_stats.functions_inlined = timing::measure("module_inlining", || {
+                ModuleInlining::new().inline_functions(module)
+            })?;
         }
         if total_stats.functions_inlined > 0 {
-            let stats = self.apply_function_stages(module)?;
+            let stats = timing::measure("function_stages", || self.apply_function_stages(module))?;
             total_stats.transforms_run += stats.transforms_run;
             total_stats.transforms_changed += stats.transforms_changed;
             total_stats.iterations += stats.iterations;

@@ -14,6 +14,7 @@ use crate::{
         runtime_builtins,
     },
     parser::parse_module,
+    timing,
 };
 use lamina_mir::RelocationModel;
 #[cfg(feature = "ssa-round-trip")]
@@ -208,12 +209,15 @@ pub fn compile(options: CompileOptions) -> Result<(), Box<dyn Error>> {
 
     check_default_cpu_level_runs_here(&options, target)?;
 
-    let ir_mod = parse_module(&ir_source).map_err(|e| format!("IR parse failed: {e}"))?;
-    let mut mir_mod = from_ir_for_target(
-        &ir_mod,
-        input_path.to_string_lossy().as_ref(),
-        target.data_layout(),
-    )
+    let ir_mod = timing::measure("parse", || parse_module(&ir_source))
+        .map_err(|e| format!("IR parse failed: {e}"))?;
+    let mut mir_mod = timing::measure("lower", || {
+        from_ir_for_target(
+            &ir_mod,
+            input_path.to_string_lossy().as_ref(),
+            target.data_layout(),
+        )
+    })
     .map_err(|e| format!("MIR lowering failed: {e}"))?;
 
     if options.opt_level > 0 {
@@ -222,9 +226,9 @@ pub fn compile(options: CompileOptions) -> Result<(), Box<dyn Error>> {
             target.architecture,
             options.mir_codegen_settings.x86_cpu_level(),
         );
-        let transform_stats = pipeline
-            .apply_to_module(&mut mir_mod)
-            .map_err(|e| format!("MIR optimization failed: {e}"))?;
+        let transform_stats =
+            timing::measure("optimize", || pipeline.apply_to_module(&mut mir_mod))
+                .map_err(|e| format!("MIR optimization failed: {e}"))?;
 
         if options.verbose {
             println!(
@@ -245,13 +249,15 @@ pub fn compile(options: CompileOptions) -> Result<(), Box<dyn Error>> {
         .clone()
         .with_target_variant(target.variant)
         .with_environment(target.environment);
-    generate_mir_to_target_with_settings(
-        &mir_mod,
-        &mut intermediate_buffer,
-        &target,
-        codegen_units,
-        &codegen_settings,
-    )
+    timing::measure("codegen", || {
+        generate_mir_to_target_with_settings(
+            &mir_mod,
+            &mut intermediate_buffer,
+            &target,
+            codegen_units,
+            &codegen_settings,
+        )
+    })
     .map_err(|e| format!("Code generation failed: {e}"))?;
 
     let intermediate_ext = assembler_input_extension(target.architecture, target.operating_system);
@@ -307,15 +313,17 @@ pub fn compile(options: CompileOptions) -> Result<(), Box<dyn Error>> {
 
     let (assembler_backend, linker_backend) =
         toolchain_backends(&options.forced_compiler, &options.assembler);
-    let assemble_result = assemble_with_ras_object_options(
-        &intermediate_path,
-        &assembly_output_path,
-        target,
-        assembler_backend,
-        &options.assembler_flags,
-        options.verbose,
-        options.ras_object_write_options(target.operating_system, &mir_mod),
-    )
+    let assemble_result = timing::measure("assemble", || {
+        assemble_with_ras_object_options(
+            &intermediate_path,
+            &assembly_output_path,
+            target,
+            assembler_backend,
+            &options.assembler_flags,
+            options.verbose,
+            options.ras_object_write_options(target.operating_system, &mir_mod),
+        )
+    })
     .map_err(|e| format!("Assembly failed: {e}"))?;
 
     if target.output_artifact() == OutputArtifact::Text {
@@ -343,30 +351,34 @@ pub fn compile(options: CompileOptions) -> Result<(), Box<dyn Error>> {
         }
 
         let linker_flags = pie_link_flags(&options.linker_flags, mir_mod.relocation)?;
-        let runtime = runtime_builtins::build(
-            &mir_mod,
-            &assemble_result.output_path,
-            target,
-            &codegen_settings,
-            options.opt_level,
-            codegen_units,
-            assembler_backend,
-            &options.assembler_flags,
-            options.verbose,
-            &options.ras_object_write_options(target.operating_system, &mir_mod),
-        )
+        let runtime = timing::measure("runtime_builtins", || {
+            runtime_builtins::build(
+                &mir_mod,
+                &assemble_result.output_path,
+                target,
+                &codegen_settings,
+                options.opt_level,
+                codegen_units,
+                assembler_backend,
+                &options.assembler_flags,
+                options.verbose,
+                &options.ras_object_write_options(target.operating_system, &mir_mod),
+            )
+        })
         .map_err(|e| format!("Compiler runtime build failed: {e}"))?;
-        link_with_runtime(
-            &assemble_result.output_path,
-            &final_output_path,
-            &target,
-            linker_backend,
-            runtime
-                .as_ref()
-                .map_or(&[][..], runtime_builtins::RuntimeObjects::objects),
-            &linker_flags,
-            options.verbose,
-        )
+        timing::measure("link", || {
+            link_with_runtime(
+                &assemble_result.output_path,
+                &final_output_path,
+                &target,
+                linker_backend,
+                runtime
+                    .as_ref()
+                    .map_or(&[][..], runtime_builtins::RuntimeObjects::objects),
+                &linker_flags,
+                options.verbose,
+            )
+        })
         .map_err(|e| format!("Linking failed: {e}"))?;
         if let Some(runtime) = runtime {
             runtime.discard();

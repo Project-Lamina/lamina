@@ -22,5 +22,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
     };
 
-    cli::compile::compile(options)
+    let result = cli::compile::compile(options);
+    lamina::timing::report();
+    result
 }

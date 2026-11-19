@@ -56,6 +56,7 @@ use crate::{
         capability::{CapabilitySet, CodegenCapability},
         validate_module_call_parameters,
     },
+    timing,
 };
 
 use lamina_codegen::{
@@ -258,13 +259,15 @@ pub fn generate_mir_x86_64_with_units_and_settings<W: Write>(
     let abi_extensions = Arc::new(AbiExtensions::from_module(module, target_os));
     let results =
         compile_functions_parallel(module, target_os, codegen_units, move |name, func, os| {
-            compile_single_function_x86_64(
-                name,
-                func,
-                os,
-                settings_arc.as_ref(),
-                abi_extensions.as_ref(),
-            )
+            timing::measure("codegen.function", || {
+                compile_single_function_x86_64(
+                    name,
+                    func,
+                    os,
+                    settings_arc.as_ref(),
+                    abi_extensions.as_ref(),
+                )
+            })
         })
         .map_err(parallel_codegen_error)?;
 

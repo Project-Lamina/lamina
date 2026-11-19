@@ -1,6 +1,5 @@
 use super::variadic::{SAVE_AREA_SLOTS, VaArea, spill_register_save_area};
 use super::*;
-use crate::mir::RelocationModel;
 use crate::mir::codegen::MAX_REGISTER_AGGREGATE;
 use crate::mir_codegen::common::argument_types;
 use crate::mir_codegen::common::claim_stack_slot;
@@ -9,6 +8,7 @@ use crate::mir_codegen::common::io_codegen_error;
 use crate::mir_codegen::common::lamina_to_codegen_error;
 use crate::mir_codegen::common::{ClobberIndex, FunctionEmissionPlan};
 use crate::mir_codegen::macho_unwind;
+use crate::{mir::RelocationModel, timing};
 use lamina_mir::EightbyteClass;
 use lamina_platform::TargetArchitecture;
 
@@ -256,7 +256,9 @@ pub(super) fn compile_single_function_x86_64(
             })
             .collect();
         address_taken.extend(func.stack_reservations.keys());
-        let all_intervals = LinearScanAllocator::compute_intervals(func);
+        let all_intervals = timing::measure("codegen.intervals", || {
+            LinearScanAllocator::compute_intervals(func)
+        });
         let intervals: Vec<_> = all_intervals
             .iter()
             .filter(|i| i.vreg.class == RegisterClass::Gpr && !address_taken.contains(&i.vreg))
@@ -268,14 +270,20 @@ pub(super) fn compile_single_function_x86_64(
             .filter(|i| eligible_vectors.contains(&i.vreg))
             .collect();
         let xmm_pool = X64RegAlloc::xmm_pool_for_global_allocation(target_os);
-        let mut plan = allocate_global(settings.regalloc, &intervals, pool.as_slice(), allowed);
-        plan.extend(allocate_global(
-            settings.regalloc,
-            &vector_intervals,
-            xmm_pool.as_slice(),
-            allowed,
-        ));
-        plan = coalesce_dying_inputs(func, &intervals, &plan, allowed);
+        let mut plan = timing::measure("codegen.regalloc", || {
+            allocate_global(settings.regalloc, &intervals, pool.as_slice(), allowed)
+        });
+        plan.extend(timing::measure("codegen.regalloc", || {
+            allocate_global(
+                settings.regalloc,
+                &vector_intervals,
+                xmm_pool.as_slice(),
+                allowed,
+            )
+        }));
+        plan = timing::measure("codegen.coalesce", || {
+            coalesce_dying_inputs(func, &intervals, &plan, allowed)
+        });
         (stack_slots, _, total_slots) = layout_global_stack_slots(func, &plan);
         reg_alloc = X64RegAlloc::from_global_plan(target_os, is_leaf, &plan);
         for allocation in plan.values() {

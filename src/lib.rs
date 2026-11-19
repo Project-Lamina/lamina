@@ -305,6 +305,7 @@ pub mod debug_info;
 
 pub mod mir_codegen;
 pub mod target; // Re-exports from lamina-platform for backward compatibility
+pub mod timing;
 
 mod cache;
 
