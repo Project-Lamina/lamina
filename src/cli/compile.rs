@@ -102,8 +102,14 @@ pub fn compile(options: CompileOptions) -> Result<(), Box<dyn Error>> {
     };
 
     let codegen_units = options.codegen_units.unwrap_or_else(|| {
-        let max_threads = cpu_count();
-        if max_threads > 2 { max_threads - 2 } else { 1 }
+        std::env::var("LAMINA_JOBS")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .filter(|&jobs| jobs > 0)
+            .unwrap_or_else(|| {
+                let max_threads = cpu_count();
+                if max_threads > 2 { max_threads - 2 } else { 1 }
+            })
     });
 
     if options.verbose {
